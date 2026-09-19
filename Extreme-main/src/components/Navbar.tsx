@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Menu, X, Phone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import logo from "@/assets/logo.jpeg";
@@ -17,6 +17,16 @@ const navLinks = [
 export default function Navbar() {
   const [open, setOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (location.pathname !== "/" || !location.hash) return;
+
+    const id = location.hash.slice(1);
+    window.requestAnimationFrame(() => {
+      document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+    });
+  }, [location.hash, location.pathname]);
 
   const handleNavClick = (href: string) => {
     setOpen(false);
@@ -25,13 +35,13 @@ export default function Navbar() {
       if (location.pathname === "/") {
         document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
       } else {
-        window.location.href = href;
+        navigate(href);
       }
       return;
     }
 
     if (href.startsWith("/")) {
-      window.location.href = href;
+      navigate(href);
     }
   };
 

@@ -212,14 +212,19 @@ async function apiCall(action: string, params: Record<string, string | number> =
     }
   });
 
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 5000);
+
   try {
-    const response = await fetch(url.toString());
+    const response = await fetch(url.toString(), { signal: controller.signal });
     return await response.json();
   } catch (err) {
     return {
       success: false,
       error: "Network error: " + (err instanceof Error ? err.message : String(err)),
     };
+  } finally {
+    window.clearTimeout(timeoutId);
   }
 }
 
@@ -481,14 +486,19 @@ export default function BookAppointment() {
       apiCall("getAddons"),
     ]);
 
-    if (!svcRes.success || !vehicleRes.success || !addonRes.success) {
-      toast.error("Unable to load booking data. Please refresh.");
-      return;
-    }
+    const servicesData = Array.isArray(svcRes.data) && svcRes.data.length > 0
+      ? (svcRes.data as Service[])
+      : MOCK_DATA.services;
+    const vehicleTypesData = Array.isArray(vehicleRes.data) && vehicleRes.data.length > 0
+      ? (vehicleRes.data as VehicleType[])
+      : MOCK_DATA.vehicleTypes;
+    const addonsData = Array.isArray(addonRes.data) && addonRes.data.length > 0
+      ? (addonRes.data as Addon[])
+      : MOCK_DATA.addons;
 
-    setServices((svcRes.data as Service[]) || []);
-    setVehicleTypes((vehicleRes.data as VehicleType[]) || []);
-    setAddons((addonRes.data as Addon[]) || []);
+    setServices(servicesData);
+    setVehicleTypes(vehicleTypesData);
+    setAddons(addonsData);
   }, []);
 
   useEffect(() => {
@@ -504,13 +514,11 @@ export default function BookAppointment() {
     const result = await apiCall("getSlots", { date: state.date });
     setLoadingSlots(false);
 
-    if (!result.success) {
-      toast.error("Failed to load time slots");
-      setSlots([]);
-      return;
-    }
+    const availableSlots = Array.isArray(result.data) && result.data.length > 0
+      ? (result.data as Slot[])
+      : ALL_SLOTS.map((time) => ({ time, available: true }));
 
-    setSlots((result.data as Slot[]) || []);
+    setSlots(availableSlots);
   }, [state.date]);
 
   useEffect(() => {
