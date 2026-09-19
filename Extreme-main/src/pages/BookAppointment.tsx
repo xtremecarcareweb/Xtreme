@@ -39,12 +39,16 @@ import {
   getBookings,
   getFriendlyError,
 } from "@/lib/bookings";
+import {
+  validateBookingForm,
+  sanitizeName,
+  validateAndSanitizeEmail,
+  validateAndSanitizePhone,
+  bookingLimiter,
+} from "@/lib/validation";
 import { toast } from "sonner";
 
-const API_URL =
-  "https://script.google.com/macros/s/AKfycbyFPeQt10pbrzrVTW9hGOsXsAMKsIjtOXhHN6lQ1iVDWuWy_fO_eeEnQ7IHhL2CY4VS/exec";
-
-const DENT_PRICE = 500;
+const API_URL = import.meta.env.VITE_API_URL || "";
 const TOTAL_STEPS = 7;
 
 interface Service {
@@ -551,26 +555,70 @@ export default function BookAppointment() {
     }
 
     if (step === 6) {
+      // Rate limiting: prevent spam/DoS attacks
+      if (!bookingLimiter.isAllowed("booking_submission")) {
+        const remainingMs = bookingLimiter.getRemainingTime("booking_submission");
+        const remainingSec = Math.ceil(remainingMs / 1000);
+        toast.error(`Too many booking attempts. Please wait ${remainingSec} seconds before trying again.`);
+        return;
+      }
+
       setSubmitting(true);
       setConfirmError(null);
 
+      // Validate all form data before submission
+      const validationResult = validateBookingForm(
+        {
+          name: state.customer.name,
+          email: state.customer.email,
+          phone: state.customer.phone,
+          carModel: state.customer.carModel,
+          service: state.services[0] || "",
+          vehicleType: state.vehicleType || "",
+          date: state.date || "",
+          timeSlot: state.timeSlot || "",
+          notes: state.customer.notes,
+        },
+        [
+          "Business Class Customisation",
+          "Full Car Customisation",
+          "Paint Protection Film (PPF)",
+          "Coatings",
+          "Body Kits",
+          "Premium Infotainment Systems",
+          "Accessories",
+          "Gold Package",
+          "Automatic Car Wash",
+        ],
+        ["Sedan", "SUV", "Hatchback", "MUV", "Convertible", "Truck", "Commercial"]
+      );
+
+      if (!validationResult.isValid) {
+        setSubmitting(false);
+        // Show the first error message
+        const firstError = Object.values(validationResult.errors)[0];
+        toast.error(firstError || "Please check your form data");
+        console.warn("Validation errors:", validationResult.errors);
+        return;
+      }
+
+      // Use sanitized values from validation
       const payload = {
         service: state.services.join(", "),
-        vehicleType: state.vehicleType || "",
-        // dents and addons removed per request
-        date: state.date || "",
-        timeSlot: state.timeSlot || "",
-        customerName: state.customer.name,
-        name: state.customer.name,
-        phone: state.customer.phone,
-        email: state.customer.email,
-        customerEmail: state.customer.email,
+        vehicleType: validationResult.sanitized.vehicleType || "",
+        date: validationResult.sanitized.date || "",
+        timeSlot: validationResult.sanitized.timeSlot || "",
+        customerName: validationResult.sanitized.name,
+        name: validationResult.sanitized.name,
+        phone: validationResult.sanitized.phone,
+        email: validationResult.sanitized.email,
+        customerEmail: validationResult.sanitized.email,
         sendEmail: "true",
         notifyCustomer: "true",
         confirmationEmail: "true",
-        carModel: state.customer.carModel,
-        notes: state.customer.notes,
-        price: state.calculatedPrice,
+        carModel: validationResult.sanitized.carModel,
+        notes: validationResult.sanitized.notes || "",
+        // Note: price is NOT sent from client; server recalculates based on validated inputs
       };
 
       const result = await apiCall("createBooking", payload);
@@ -832,65 +880,70 @@ export default function BookAppointment() {
                 )}
 
                 {step === 5 && (
-                  <div className="space-y-4">
+                  <div className="space-y-4 sm:space-y-5">
                     <p className="font-heading font-semibold flex items-center gap-2">
                       <User className="h-4 w-4 text-primary" /> Customer Details
                     </p>
                     <div>
-                      <label className="text-sm mb-1.5 block">Full Name</label>
+                      <label className="text-sm font-medium mb-2 block">Full Name</label>
                       <input
                         type="text"
                         value={state.customer.name}
                         onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, name: e.target.value } }))}
-                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
-                        placeholder="Enter full name"
+                        className="w-full rounded-lg border border-border bg-secondary px-4 py-3 min-h-[44px] text-base focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-0 transition-colors"
+                        placeholder="Full name"
+                        autoCapitalize="words"
                         required
                       />
                     </div>
                     <div>
-                      <label className="text-sm mb-1.5 block flex items-center gap-1.5">
+                      <label className="text-sm font-medium mb-2 block flex items-center gap-1.5">
                         <Phone className="h-3.5 w-3.5 text-primary" /> Phone Number
                       </label>
                       <input
                         type="tel"
+                        inputMode="tel"
                         value={state.customer.phone}
                         onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, phone: e.target.value } }))}
-                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
-                        placeholder="+91 XXXXX XXXXX"
+                        className="w-full rounded-lg border border-border bg-secondary px-4 py-3 min-h-[44px] text-base focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-0 transition-colors"
+                        placeholder="Phone number"
+                        pattern="[0-9+\-\s]{10,15}"
                         required
                       />
                     </div>
                     <div>
-                      <label className="text-sm mb-1.5 block flex items-center gap-1.5">
+                      <label className="text-sm font-medium mb-2 block flex items-center gap-1.5">
                         <Mail className="h-3.5 w-3.5 text-primary" /> Email Address
                       </label>
                       <input
                         type="email"
+                        inputMode="email"
                         value={state.customer.email}
                         onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, email: e.target.value } }))}
-                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
-                        placeholder="you@example.com"
+                        className="w-full rounded-lg border border-border bg-secondary px-4 py-3 min-h-[44px] text-base focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-0 transition-colors"
+                        placeholder="Email"
                         required
                       />
                     </div>
                     <div>
-                      <label className="text-sm mb-1.5 block flex items-center gap-1.5">
+                      <label className="text-sm font-medium mb-2 block flex items-center gap-1.5">
                         <Car className="h-3.5 w-3.5 text-primary" /> Car Model
                       </label>
                       <input
                         type="text"
                         value={state.customer.carModel}
                         onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, carModel: e.target.value } }))}
-                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
+                        className="w-full rounded-lg border border-border bg-secondary px-4 py-3 min-h-[44px] text-base focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-0 transition-colors"
                         placeholder="e.g., Hyundai Creta"
+                        autoCapitalize="words"
                       />
                     </div>
                     <div>
-                      <label className="text-sm mb-1.5 block">Notes (optional)</label>
+                      <label className="text-sm font-medium mb-2 block">Notes (optional)</label>
                       <textarea
                         value={state.customer.notes}
                         onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, notes: e.target.value } }))}
-                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3 min-h-[110px]"
+                        className="w-full rounded-lg border border-border bg-secondary px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-0 transition-colors min-h-[100px] sm:min-h-[110px] resize-none"
                         placeholder="Any special request"
                       />
                     </div>

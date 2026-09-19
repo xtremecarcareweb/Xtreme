@@ -12,17 +12,16 @@ import {
 } from "@/lib/bookings";
 import { toast } from "sonner";
 
-const ADMIN_USER = "admin";
-const ADMIN_PASS = "xtreme2024";
+// Get admin token from environment
+const ADMIN_AUTH_TOKEN = import.meta.env.VITE_ADMIN_AUTH_TOKEN || "admin_token_production";
 
 export default function AdminDashboard() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
+  const [adminToken, setAdminToken] = useState("");
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [filterDate, setFilterDate] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [showToken, setShowToken] = useState(false);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -63,12 +62,24 @@ export default function AdminDashboard() {
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (username === ADMIN_USER && password === ADMIN_PASS) {
+    
+    // Validate token against environment variable
+    if (adminToken.trim() === ADMIN_AUTH_TOKEN) {
       setIsLoggedIn(true);
+      setAdminToken(""); // Clear token from memory
       toast.success("Welcome, Admin!");
     } else {
-      toast.error("Invalid credentials");
+      toast.error("Invalid authentication token");
+      console.warn("Failed admin login attempt");
     }
+  };
+
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setAdminToken("");
+    // Clear any session data
+    sessionStorage.removeItem("admin_session");
+    toast.success("Logged out successfully");
   };
 
   const refreshBookings = async () => {
@@ -109,7 +120,7 @@ export default function AdminDashboard() {
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 0.5 }}
-          className="glass rounded-2xl p-8 w-full max-w-sm space-y-6"
+          className="glass rounded-2xl p-6 sm:p-8 w-full max-w-sm space-y-6"
         >
           <div className="text-center">
             <LogIn className="h-10 w-10 text-primary mx-auto mb-4" />
@@ -117,33 +128,28 @@ export default function AdminDashboard() {
             <p className="text-muted-foreground text-sm mt-1">Xtreme Car Care Dashboard</p>
           </div>
           <div>
-            <label className="text-sm font-heading font-semibold mb-2 block">Username</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full rounded-lg border border-border bg-secondary px-4 py-3 text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
-              required
-            />
-          </div>
-          <div>
-            <label className="text-sm font-heading font-semibold mb-2 block">Password</label>
+            <label className="text-sm font-heading font-semibold mb-2 block">Authentication Token</label>
             <div className="relative">
               <input
-                type={showPassword ? "text" : "password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded-lg border border-border bg-secondary px-4 py-3 text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors pr-10"
+                type={showToken ? "text" : "password"}
+                value={adminToken}
+                onChange={(e) => setAdminToken(e.target.value)}
+                placeholder="Enter admin authentication token"
+                className="w-full rounded-lg border border-border bg-secondary px-4 py-3 pr-10 text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
                 required
               />
               <button
                 type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                onClick={() => setShowToken(!showToken)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                title={showToken ? "Hide token" : "Show token"}
               >
-                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              Token is configured in environment variable VITE_ADMIN_AUTH_TOKEN
+            </p>
           </div>
           <Button type="submit" variant="gold" className="w-full">Login</Button>
         </motion.form>
@@ -156,7 +162,7 @@ export default function AdminDashboard() {
       <div className="border-b border-border glass">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <h1 className="font-heading text-xl font-bold text-gradient-gold">Admin Dashboard</h1>
-          <Button variant="gold-outline" size="sm" onClick={() => setIsLoggedIn(false)}>Logout</Button>
+          <Button variant="gold-outline" size="sm" onClick={handleLogout}>Logout</Button>
         </div>
       </div>
 
@@ -195,8 +201,8 @@ export default function AdminDashboard() {
           )}
         </div>
 
-        {/* Bookings Table */}
-        <div className="glass rounded-xl overflow-hidden">
+        {/* Bookings Table - Desktop View */}
+        <div className="hidden md:block glass rounded-xl overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
@@ -266,6 +272,82 @@ export default function AdminDashboard() {
               </tbody>
             </table>
           </div>
+        </div>
+
+        {/* Bookings List - Mobile View */}
+        <div className="md:hidden space-y-3">
+          {isLoading ? (
+            <div className="text-center py-12 text-muted-foreground">
+              Loading bookings...
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground">
+              No bookings found
+            </div>
+          ) : (
+            filtered.map((booking) => (
+              <motion.div
+                key={booking.id}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="glass rounded-lg p-4 space-y-3"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-semibold text-foreground truncate">{booking.name}</h3>
+                    <p className="text-xs text-muted-foreground">{booking.phone}</p>
+                  </div>
+                  <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold whitespace-nowrap ${
+                    booking.status === "completed"
+                      ? "bg-gradient-gold/20 text-gradient-gold"
+                      : "bg-primary/20 text-primary"
+                  }`}>
+                    {booking.status === "completed" ? "Done" : "Booked"}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Email</p>
+                    <p className="text-foreground truncate">{booking.email || "-"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Car</p>
+                    <p className="text-foreground truncate">{booking.carModel}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Service</p>
+                    <p className="text-foreground truncate">{booking.serviceType}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Date & Time</p>
+                    <p className="text-foreground">{booking.date} {booking.timeSlot}</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-2 border-t border-border/30">
+                  {booking.status === "booked" && (
+                    <button
+                      onClick={() => handleComplete(booking.id)}
+                      className="flex-1 min-h-[44px] flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors text-sm font-medium"
+                      title="Mark completed"
+                    >
+                      <CheckCircle className="h-4 w-4" />
+                      Mark Done
+                    </button>
+                  )}
+                  <button
+                    onClick={() => handleDelete(booking.id)}
+                    className="flex-1 min-h-[44px] flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors text-sm font-medium"
+                    title="Delete"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete
+                  </button>
+                </div>
+              </motion.div>
+            ))
+          )}
         </div>
       </div>
     </div>

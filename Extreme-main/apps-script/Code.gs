@@ -3,6 +3,10 @@ const SHEET_NAME = "Bookings";
 const SHEET_GID = 1806084883;
 const SENDER_EMAIL = "mohan04032007m@gmail.com";
 
+// Admin authentication token for protected operations
+// WARNING: Change this token and store it securely. Use environment variables in production.
+const ADMIN_AUTH_TOKEN = "your_admin_token_here_change_in_production";
+
 const DENT_PRICE = 500;
 
 const SERVICE_CATALOG = [
@@ -31,6 +35,11 @@ const ADDON_CATALOG = [
 ];
 
 const ALL_SLOTS = ["09:00", "10:30", "12:00", "14:00", "16:00", "18:00"];
+
+function isValidAdminToken(token) {
+  if (!token) return false;
+  return String(token).trim() === String(ADMIN_AUTH_TOKEN).trim();
+}
 
 function jsonResponse(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
@@ -140,6 +149,7 @@ function sendBookingEmail(email, booking) {
   }
 
   const subject = "Xtreme Car Care Booking Confirmation";
+  const priceInfo = booking.price ? "Estimated Price: ₹" + booking.price + "\n" : "";
   const body =
     "Dear " + booking.name + ",\n\n" +
     "Thank you for booking with Xtreme Car Care.\n\n" +
@@ -151,8 +161,9 @@ function sendBookingEmail(email, booking) {
     "Service: " + booking.service + "\n" +
     "Car Model: " + booking.carModel + "\n" +
     "Date: " + booking.date + "\n" +
-    "Time Slot: " + booking.time + "\n\n" +
-    "If you need to reschedule or cancel your booking, please contact us in advance.\n\n" +
+    "Time Slot: " + booking.time + "\n" +
+    priceInfo +
+    "\nIf you need to reschedule or cancel your booking, please contact us in advance.\n\n" +
     "Thank you for choosing Xtreme Car Care.\n\n" +
     "Regards,\n" +
     "Xtreme Car Care\n" +
@@ -371,6 +382,11 @@ function handleGetBookings() {
 }
 
 function handleBook(body) {
+  // Validate admin token for booking creation
+  if (!isValidAdminToken(body.adminAuthToken)) {
+    return fail("Unauthorized: Invalid or missing admin token");
+  }
+
   const name = clean(body.customerName || body.name);
   const email = clean(body.customerEmail || body.email);
   const phone = clean(body.phone);
@@ -379,7 +395,6 @@ function handleBook(body) {
   const date = normalizeDate(clean(body.date));
   const time = normalizeTime(clean(body.timeSlot || body.time));
   const vehicleType = clean(body.vehicleType || body.vehicle_type);
-  const price = Number(body.price || 0);
 
   if (!name || !email || !phone || !service || !date || !time) {
     return fail("Missing required fields");
@@ -405,6 +420,20 @@ function handleBook(body) {
 
   sh.appendRow([name, email, phone, carModel, service, date, time, "booked", new Date()]);
 
+  // Server-side price calculation - ignore any client-submitted price
+  const selectedServices = String(service || "")
+    .split(",")
+    .map((s) => clean(s))
+    .filter(Boolean);
+  const basePrice = selectedServices.reduce((sum, serviceName) => {
+    const svc = SERVICE_CATALOG.find((s) => s.service_name === serviceName);
+    return sum + (svc ? svc.base_price : 0);
+  }, 0);
+
+  const vehicle = VEHICLE_TYPES.find((v) => v.vehicle_type === vehicleType);
+  const multiplier = vehicle ? Number(vehicle.price_multiplier) : 1;
+  const calculatedPrice = basePrice * multiplier;
+
   const shouldSendEmail =
     String(body.sendEmail || body.notifyCustomer || body.confirmationEmail || "true").toLowerCase() !== "false";
 
@@ -420,6 +449,7 @@ function handleBook(body) {
       service: service,
       date: date,
       time: time,
+      price: calculatedPrice,
     });
     emailSent = mail.sent === true;
     emailStatus = mail.reason;
@@ -434,7 +464,7 @@ function handleBook(body) {
       vehicleType: vehicleType,
       date: date,
       timeSlot: time,
-      price: price,
+      price: calculatedPrice,
       status: "Confirmed",
       message: "Booking confirmed successfully!",
       emailSent: emailSent,
@@ -445,6 +475,11 @@ function handleBook(body) {
 }
 
 function handleDeleteBooking(body) {
+  // Validate admin token
+  if (!isValidAdminToken(body.adminAuthToken)) {
+    return fail("Unauthorized: Invalid or missing admin token");
+  }
+
   const rowNumber = parseInt(body.rowNumber || body.id, 10);
   const sh = getSheet();
   ensureHeaderRow(sh);
@@ -461,6 +496,11 @@ function handleDeleteBooking(body) {
 }
 
 function handleDeleteByDetails(body) {
+  // Validate admin token
+  if (!isValidAdminToken(body.adminAuthToken)) {
+    return fail("Unauthorized: Invalid or missing admin token");
+  }
+
   const phone = normalizePhone(clean(body.phone));
   const date = normalizeDate(clean(body.date));
   const time = normalizeTime(clean(body.time || body.timeSlot));
@@ -500,6 +540,11 @@ function handleDeleteByDetails(body) {
 }
 
 function handleMarkCompleted(body) {
+  // Validate admin token
+  if (!isValidAdminToken(body.adminAuthToken)) {
+    return fail("Unauthorized: Invalid or missing admin token");
+  }
+
   const rowNumber = parseInt(body.rowNumber || body.id, 10);
   const sh = getSheet();
   ensureHeaderRow(sh);

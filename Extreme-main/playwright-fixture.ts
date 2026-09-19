@@ -1,3 +1,19 @@
-// Re-export the base fixture from the package
-// Override or extend test/expect here if needed
-export { test, expect } from "lovable-agent-playwright-config/fixture";
+import { test as base, expect } from '@playwright/test';
+
+type Fixtures = {
+  // Add any app-specific fixtures here
+  // Example:
+  // authenticatedPage: Page;
+};
+
+export const test = base.extend<Fixtures>({
+  // Define fixtures here
+  // Example:
+  // authenticatedPage: async ({ page }, use) => {
+  //   await page.goto('/');
+  //   // Perform authentication
+  //   await use(page);
+  // },
+});
+
+export { expect };
