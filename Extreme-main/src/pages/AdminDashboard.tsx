@@ -13,10 +13,28 @@ import {
 import { toast } from "sonner";
 
 // Get admin token from environment
-const ADMIN_AUTH_TOKEN = import.meta.env.VITE_ADMIN_AUTH_TOKEN || "admin_token_production";
+const ADMIN_AUTH_TOKEN = import.meta.env.VITE_ADMIN_AUTH_TOKEN || "";
+const ADMIN_SESSION_KEY = "xtreme_admin_session";
+const ADMIN_SESSION_DURATION_MS = 30 * 60 * 1000;
+
+function hasValidAdminSession(): boolean {
+  try {
+    return getAdminSessionExpiry() > Date.now();
+  } catch {
+    sessionStorage.removeItem(ADMIN_SESSION_KEY);
+    return false;
+  }
+}
+
+function getAdminSessionExpiry(): number {
+  const session = JSON.parse(sessionStorage.getItem(ADMIN_SESSION_KEY) || "null") as {
+    expiresAt?: number;
+  } | null;
+  return session?.expiresAt || 0;
+}
 
 export default function AdminDashboard() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(hasValidAdminSession);
   const [adminToken, setAdminToken] = useState("");
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [filterDate, setFilterDate] = useState("");
@@ -25,6 +43,13 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     if (!isLoggedIn) return;
+
+    const sessionTimeout = window.setTimeout(() => {
+      setIsLoggedIn(false);
+      setBookings([]);
+      sessionStorage.removeItem(ADMIN_SESSION_KEY);
+      toast.info("Your admin session has expired");
+    }, Math.max(0, getAdminSessionExpiry() - Date.now()));
 
     let isMounted = true;
 
@@ -57,6 +82,7 @@ export default function AdminDashboard() {
     return () => {
       isMounted = false;
       window.clearInterval(pollId);
+      window.clearTimeout(sessionTimeout);
     };
   }, [isLoggedIn]);
 
@@ -66,7 +92,11 @@ export default function AdminDashboard() {
     // Validate token against environment variable
     if (adminToken.trim() === ADMIN_AUTH_TOKEN) {
       setIsLoggedIn(true);
-      setAdminToken(""); // Clear token from memory
+      sessionStorage.setItem(
+        ADMIN_SESSION_KEY,
+        JSON.stringify({ expiresAt: Date.now() + ADMIN_SESSION_DURATION_MS })
+      );
+      setAdminToken("");
       toast.success("Welcome, Admin!");
     } else {
       toast.error("Invalid authentication token");
@@ -77,8 +107,8 @@ export default function AdminDashboard() {
   const handleLogout = () => {
     setIsLoggedIn(false);
     setAdminToken("");
-    // Clear any session data
-    sessionStorage.removeItem("admin_session");
+    setBookings([]);
+    sessionStorage.removeItem(ADMIN_SESSION_KEY);
     toast.success("Logged out successfully");
   };
 

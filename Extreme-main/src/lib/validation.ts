@@ -30,6 +30,16 @@ export function sanitizeName(input: string): string {
 }
 
 /**
+ * Sanitize a vehicle make/model without allowing markup or control characters.
+ */
+export function sanitizeVehicleDetails(input: string): string {
+  if (!input) return "";
+  return sanitizeString(input)
+    .replace(/[^a-zA-Z0-9\s\-'./()&+अ-ह०-९]/g, "")
+    .slice(0, 100);
+}
+
+/**
  * Validate and sanitize email address
  */
 export function validateAndSanitizeEmail(email: string): {
@@ -54,7 +64,7 @@ export function validateAndSanitizePhone(phone: string): {
   isValid: boolean;
   sanitized: string;
 } {
-  const sanitized = phone.replace(/[^\d+]/g, "").trim();
+  const sanitized = phone.trim().replace(/[\s().-]/g, "");
 
   // Allow +91 format or 10-digit numbers
   const phoneRegex = /^(\+91|0)?[6-9]\d{9}$/;
@@ -80,13 +90,18 @@ export function validateDate(date: string): {
   }
 
   try {
-    const dateObj = new Date(sanitized);
+    const [year, month, day] = sanitized.split("-").map(Number);
+    const dateObj = new Date(year, month - 1, day);
     const now = new Date();
     now.setHours(0, 0, 0, 0);
+    const isCalendarDate =
+      dateObj.getFullYear() === year &&
+      dateObj.getMonth() === month - 1 &&
+      dateObj.getDate() === day;
 
     // Date must be today or in future
     return {
-      isValid: dateObj >= now && dateObj.toString() !== "Invalid Date",
+      isValid: isCalendarDate && dateObj >= now,
       sanitized,
     };
   } catch {
@@ -217,7 +232,7 @@ export function validateBookingForm(
   }
 
   // Validate car model
-  const sanitizedCar = sanitizeString(data.carModel);
+  const sanitizedCar = sanitizeVehicleDetails(data.carModel);
   if (!sanitizedCar || sanitizedCar.length < 2) {
     errors.carModel = "Car model is required";
   } else {

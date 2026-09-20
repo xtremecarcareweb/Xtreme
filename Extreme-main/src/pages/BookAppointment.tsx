@@ -563,6 +563,8 @@ export default function BookAppointment() {
     }
 
     if (step === 6) {
+      if (submitting) return;
+
       // Rate limiting: prevent spam/DoS attacks
       if (!bookingLimiter.isAllowed("booking_submission")) {
         const remainingMs = bookingLimiter.getRemainingTime("booking_submission");
