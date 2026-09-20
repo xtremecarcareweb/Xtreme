@@ -480,25 +480,29 @@ export default function BookAppointment() {
   );
 
   const loadStaticData = useCallback(async () => {
-    const [svcRes, vehicleRes, addonRes] = await Promise.all([
-      apiCall("getServices"),
-      apiCall("getVehicleTypes"),
-      apiCall("getAddons"),
-    ]);
+    setServices(MOCK_DATA.services);
+    setVehicleTypes(MOCK_DATA.vehicleTypes);
+    setAddons(MOCK_DATA.addons);
 
-    const servicesData = Array.isArray(svcRes.data) && svcRes.data.length > 0
-      ? (svcRes.data as Service[])
-      : MOCK_DATA.services;
-    const vehicleTypesData = Array.isArray(vehicleRes.data) && vehicleRes.data.length > 0
-      ? (vehicleRes.data as VehicleType[])
-      : MOCK_DATA.vehicleTypes;
-    const addonsData = Array.isArray(addonRes.data) && addonRes.data.length > 0
-      ? (addonRes.data as Addon[])
-      : MOCK_DATA.addons;
+    try {
+      const [svcRes, vehicleRes, addonRes] = await Promise.all([
+        apiCall("getServices"),
+        apiCall("getVehicleTypes"),
+        apiCall("getAddons"),
+      ]);
 
-    setServices(servicesData);
-    setVehicleTypes(vehicleTypesData);
-    setAddons(addonsData);
+      if (Array.isArray(svcRes.data) && svcRes.data.length > 0) {
+        setServices(svcRes.data as Service[]);
+      }
+      if (Array.isArray(vehicleRes.data) && vehicleRes.data.length > 0) {
+        setVehicleTypes(vehicleRes.data as VehicleType[]);
+      }
+      if (Array.isArray(addonRes.data) && addonRes.data.length > 0) {
+        setAddons(addonRes.data as Addon[]);
+      }
+    } catch {
+      // Keep the local catalog available when the API is unavailable.
+    }
   }, []);
 
   useEffect(() => {
@@ -510,15 +514,16 @@ export default function BookAppointment() {
 
     setLoadingSlots(true);
     setState((prev) => ({ ...prev, timeSlot: null }));
+    setSlots(ALL_SLOTS.map((time) => ({ time, available: true })));
 
-    const result = await apiCall("getSlots", { date: state.date });
-    setLoadingSlots(false);
-
-    const availableSlots = Array.isArray(result.data) && result.data.length > 0
-      ? (result.data as Slot[])
-      : ALL_SLOTS.map((time) => ({ time, available: true }));
-
-    setSlots(availableSlots);
+    try {
+      const result = await apiCall("getSlots", { date: state.date });
+      if (Array.isArray(result.data) && result.data.length > 0) {
+        setSlots(result.data as Slot[]);
+      }
+    } finally {
+      setLoadingSlots(false);
+    }
   }, [state.date]);
 
   useEffect(() => {
