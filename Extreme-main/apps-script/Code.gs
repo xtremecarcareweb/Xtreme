@@ -252,7 +252,7 @@ function doPost(e) {
     if (action === "deleteBooking") return handleDeleteBooking(body);
     if (action === "deleteBookingByDetails") return handleDeleteByDetails(body);
     if (action === "markCompleted") return handleMarkCompleted(body);
-    if (action === "createBooking" || action === "book") return handleBook(body);
+    if (action === "create_booking" || action === "createBooking" || action === "book") return handleBook(body);
 
     // Keep backward compatibility: no action means create booking.
     return handleBook(body);
@@ -382,21 +382,16 @@ function handleGetBookings() {
 }
 
 function handleBook(body) {
-  // Validate admin token for booking creation
-  if (!isValidAdminToken(body.adminAuthToken)) {
-    return fail("Unauthorized: Invalid or missing admin token");
-  }
-
   const name = clean(body.customerName || body.name);
   const email = clean(body.customerEmail || body.email);
   const phone = clean(body.phone);
   const carModel = clean(body.carModel || body.car_model);
-  const service = clean(body.service || body.services);
+  const service = clean(body.servicePackage || body.service || body.services);
   const date = normalizeDate(clean(body.date));
-  const time = normalizeTime(clean(body.timeSlot || body.time));
+  const time = normalizeTime(clean(body.slot || body.timeSlot || body.time));
   const vehicleType = clean(body.vehicleType || body.vehicle_type);
 
-  if (!name || !email || !phone || !service || !date || !time) {
+  if (!name || !phone || !service || !date || !time) {
     return fail("Missing required fields");
   }
 
@@ -457,8 +452,12 @@ function handleBook(body) {
 
   const bookingId = "BK-" + Utilities.getUuid().slice(0, 8).toUpperCase();
 
-  return ok(
-    {
+  return jsonResponse({
+    success: true,
+    status: "success",
+    message: "Booking confirmed!",
+    bookingId: bookingId,
+    data: {
       bookingId: bookingId,
       service: service,
       vehicleType: vehicleType,
@@ -470,8 +469,7 @@ function handleBook(body) {
       emailSent: emailSent,
       emailStatus: emailStatus,
     },
-    "Booking confirmed!"
-  );
+  });
 }
 
 function handleDeleteBooking(body) {

@@ -215,12 +215,14 @@ export function validateBookingForm(
     sanitized.name = sanitizedName;
   }
 
-  // Validate email
-  const emailValidation = validateAndSanitizeEmail(data.email);
-  if (!emailValidation.isValid) {
-    errors.email = "Please enter a valid email address";
-  } else {
-    sanitized.email = emailValidation.sanitized;
+  // Validate email when provided
+  if (data.email.trim()) {
+    const emailValidation = validateAndSanitizeEmail(data.email);
+    if (!emailValidation.isValid) {
+      errors.email = "Please enter a valid email address";
+    } else {
+      sanitized.email = emailValidation.sanitized;
+    }
   }
 
   // Validate phone

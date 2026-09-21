@@ -47,6 +47,7 @@ import {
   bookingLimiter,
 } from "@/lib/validation";
 import { toast } from "sonner";
+import { createBooking } from "@/lib/api";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 const TOTAL_STEPS = 7;
@@ -469,7 +470,7 @@ export default function BookAppointment() {
         case 4:
           return Boolean(state.timeSlot);
         case 5:
-          return Boolean(state.customer.name && state.customer.phone && state.customer.email);
+          return Boolean(state.customer.name && state.customer.phone);
         case 6:
           return true;
         default:
@@ -619,24 +620,18 @@ export default function BookAppointment() {
 
       // Use sanitized values from validation
       const payload = {
-        service: state.services.join(", "),
-        vehicleType: validationResult.sanitized.vehicleType || "",
-        date: validationResult.sanitized.date || "",
-        timeSlot: validationResult.sanitized.timeSlot || "",
-        customerName: validationResult.sanitized.name,
         name: validationResult.sanitized.name,
         phone: validationResult.sanitized.phone,
-        email: validationResult.sanitized.email,
-        customerEmail: validationResult.sanitized.email,
-        sendEmail: "true",
-        notifyCustomer: "true",
-        confirmationEmail: "true",
-        carModel: validationResult.sanitized.carModel,
-        notes: validationResult.sanitized.notes || "",
-        // Note: price is NOT sent from client; server recalculates based on validated inputs
+        vehicleType: validationResult.sanitized.vehicleType || "",
+        servicePackage: state.services.join(", "),
+        date: validationResult.sanitized.date || "",
+        slot: validationResult.sanitized.timeSlot || "",
+        ...(validationResult.sanitized.email
+          ? { email: validationResult.sanitized.email }
+          : {}),
       };
 
-      const result = await apiCall("createBooking", payload);
+      const result = await createBooking(payload);
       setSubmitting(false);
 
       if (!result.success) {
@@ -937,7 +932,6 @@ export default function BookAppointment() {
                         onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, email: e.target.value } }))}
                         className="w-full rounded-lg border border-border bg-secondary px-4 py-3 min-h-[44px] text-base focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-0 transition-colors"
                         placeholder="Email"
-                        required
                       />
                     </div>
                     <div>
