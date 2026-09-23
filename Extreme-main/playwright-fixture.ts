@@ -1,10 +1,6 @@
 import { test as base, expect } from '@playwright/test';
 
-type Fixtures = {
-  // Add any app-specific fixtures here
-  // Example:
-  // authenticatedPage: Page;
-};
+type Fixtures = Record<string, never>;
 
 export const test = base.extend<Fixtures>({
   // Define fixtures here

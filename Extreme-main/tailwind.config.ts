@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import tailwindcssAnimate from "tailwindcss-animate";
 
 export default {
   darkMode: ["class"],
@@ -14,31 +15,28 @@ export default {
     },
     extend: {
       fontFamily: {
-        heading: ["Georgia", "Times New Roman", "serif"],
-        body: ["Arial", "sans-serif"],
+        heading: ['"Cormorant Garamond"', "Georgia", '"Times New Roman"', "serif"],
+        body: ["Jost", "sans-serif"],
+        sans: ["Jost", "sans-serif"],
+        serif: ['"Cormorant Garamond"', "Georgia", '"Times New Roman"', "serif"],
       },
       colors: {
-        border: "#23222a",
-        input: "#23222a",
-        ring: "#bfa76a",
-        background: "#0B0B0B",
-        foreground: "#EAEAEA",
-        gold: {
-          DEFAULT: "#bfa76a",
-          light: "#e2c98f",
-          dark: "#8c7a4f"
-        },
+        border: "#E8E0D0",
+        input: "#F0EBE0",
+        ring: "#C9A84C",
+        background: "#FFFEF5",
+        foreground: "#1A1814",
         primary: {
-          DEFAULT: "#bfa76a",
-          foreground: "#0B0B0B",
+          DEFAULT: "#C9A84C",
+          foreground: "#FFFFFF",
         },
         secondary: {
-          DEFAULT: "#23222a",
-          foreground: "#EAEAEA",
+          DEFAULT: "#F5F0E8",
+          foreground: "#1A1814",
         },
         muted: {
-          DEFAULT: "#23222a",
-          foreground: "#b0b0b0",
+          DEFAULT: "#F0EBE0",
+          foreground: "#6B6357",
         },
         accent: {
           DEFAULT: "hsl(var(--accent))",
@@ -52,8 +50,8 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
-        gold: "hsl(var(--gold))",
-        "gold-dark": "hsl(var(--gold-dark))",
+        gold: "#C9A84C",
+        "gold-dark": "#B8952E",
         surface: "hsl(var(--surface))",
         "surface-light": "hsl(var(--surface-light))",
         sidebar: {
@@ -113,5 +111,5 @@ export default {
       },
     },
   },
-  plugins: [require("tailwindcss-animate")],
+  plugins: [tailwindcssAnimate],
 } satisfies Config;

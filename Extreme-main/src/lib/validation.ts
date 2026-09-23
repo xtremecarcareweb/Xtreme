@@ -1,331 +1,175 @@
-/**
- * Input Validation & Sanitization Utilities
- * Prevents XSS, SQL injection, and malformed data
- */
+import { z } from "zod";
 
-/**
- * Sanitize string input by removing HTML tags and dangerous characters
- */
-export function sanitizeString(input: string): string {
-  if (!input) return "";
-  return input
-    .trim()
-    // Remove HTML/script tags
-    .replace(/<[^>]*>/g, "")
-    // Remove common XSS patterns
-    .replace(/javascript:/gi, "")
-    .replace(/on\w+\s*=/gi, "")
-    // Limit length to prevent DoS
-    .slice(0, 500);
+const HTML_TAGS = /<[^>]*>/g;
+const NAME_PATTERN = /^[\p{L}][\p{L}\s.'-]*$/u;
+const PHONE_PATTERN = /^\+?[0-9][0-9\s().-]{6,19}$/;
+const TIME_SLOT_PATTERN = /^(09:00|10:30|12:00|14:00|16:00|18:00)$/;
+
+export function sanitizeText(value: string, maxLength: number): string {
+  const withoutControlCharacters = Array.from(value)
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code > 0x1f && code !== 0x7f;
+    })
+    .join("");
+
+  return withoutControlCharacters.replace(HTML_TAGS, "").trim().slice(0, maxLength);
 }
 
-/**
- * Sanitize name field (alphanumeric, spaces, hyphens, apostrophes only)
- */
-export function sanitizeName(input: string): string {
-  if (!input) return "";
-  const sanitized = sanitizeString(input);
-  // Allow letters, spaces, hyphens, apostrophes, and common Indian characters
-  return sanitized.replace(/[^a-zA-Z\s\-'अ-ह०-९]/g, "").slice(0, 100);
+export function sanitizeVehicleDetails(value: string): string {
+  return sanitizeText(value, 100);
 }
 
-/**
- * Sanitize a vehicle make/model without allowing markup or control characters.
- */
-export function sanitizeVehicleDetails(input: string): string {
-  if (!input) return "";
-  return sanitizeString(input)
-    .replace(/[^a-zA-Z0-9\s\-'./()&+अ-ह०-९]/g, "")
-    .slice(0, 100);
-}
-
-/**
- * Validate and sanitize email address
- */
-export function validateAndSanitizeEmail(email: string): {
-  isValid: boolean;
-  sanitized: string;
-} {
-  const sanitized = sanitizeString(email).toLowerCase().trim();
-
-  // RFC 5322 simplified email regex
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-  return {
-    isValid: emailRegex.test(sanitized) && sanitized.length <= 254,
-    sanitized,
-  };
-}
-
-/**
- * Validate and sanitize phone number (Indian format)
- */
-export function validateAndSanitizePhone(phone: string): {
-  isValid: boolean;
-  sanitized: string;
-} {
-  const sanitized = phone.trim().replace(/[\s().-]/g, "");
-
-  // Allow +91 format or 10-digit numbers
-  const phoneRegex = /^(\+91|0)?[6-9]\d{9}$/;
-
-  return {
-    isValid: phoneRegex.test(sanitized),
-    sanitized,
-  };
-}
-
-/**
- * Validate date format (YYYY-MM-DD)
- */
-export function validateDate(date: string): {
-  isValid: boolean;
-  sanitized: string;
-} {
-  const sanitized = sanitizeString(date);
-  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-
-  if (!dateRegex.test(sanitized)) {
-    return { isValid: false, sanitized };
+export function validateDate(value: string): { isValid: boolean; error?: string } {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return { isValid: false, error: "Invalid date format" };
   }
 
-  try {
-    const [year, month, day] = sanitized.split("-").map(Number);
-    const dateObj = new Date(year, month - 1, day);
-    const now = new Date();
-    now.setHours(0, 0, 0, 0);
-    const isCalendarDate =
-      dateObj.getFullYear() === year &&
-      dateObj.getMonth() === month - 1 &&
-      dateObj.getDate() === day;
+  const [yearStr, monthStr, dayStr] = value.split("-");
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10);
+  const day = parseInt(dayStr, 10);
 
-    // Date must be today or in future
-    return {
-      isValid: isCalendarDate && dateObj >= now,
-      sanitized,
-    };
-  } catch {
-    return { isValid: false, sanitized };
-  }
-}
-
-/**
- * Validate time slot format (HH:MM)
- */
-export function validateTimeSlot(time: string): {
-  isValid: boolean;
-  sanitized: string;
-} {
-  const sanitized = sanitizeString(time);
-  const timeRegex = /^\d{2}:\d{2}$/;
-
-  if (!timeRegex.test(sanitized)) {
-    return { isValid: false, sanitized };
+  const parsed = new Date(year, month - 1, day);
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return { isValid: false, error: "Invalid calendar date" };
   }
 
-  const [hours, minutes] = sanitized.split(":").map(Number);
-  const isValid =
-    hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59;
-
-  return { isValid, sanitized };
+  return { isValid: true };
 }
 
-/**
- * Sanitize notes/comments field
- */
-export function sanitizeNotes(input: string): string {
-  if (!input) return "";
-  const sanitized = sanitizeString(input);
-  // Allow letters, spaces, punctuation, and line breaks
-  return sanitized
-    .replace(/[^a-zA-Z0-9\s\-.,!?\n():'""अ-ह०-९]/g, "")
-    .slice(0, 1000);
+export function validateAndSanitizePhone(value: string): { isValid: boolean; sanitized?: string; error?: string } {
+  if (!value || typeof value !== "string") {
+    return { isValid: false, error: "Phone number is required" };
+  }
+
+  // Remove any non-digits
+  const digits = value.replace(/\D/g, "");
+
+  // Handle standard 10-digit Indian numbers
+  let sanitized = "";
+  if (digits.length === 10) {
+    sanitized = digits;
+  } else if (digits.length === 11 && digits.startsWith("0")) {
+    sanitized = digits.slice(1);
+  } else if (digits.length === 12 && digits.startsWith("91")) {
+    sanitized = digits.slice(2);
+  } else {
+    return { isValid: false, error: "Please enter a valid 10-digit phone number" };
+  }
+
+  // Indian mobile numbers start with 6, 7, 8, or 9
+  if (!/^[6-9]\d{9}$/.test(sanitized)) {
+    return { isValid: false, error: "Phone number must start with 6, 7, 8, or 9" };
+  }
+
+  return { isValid: true, sanitized };
 }
 
-/**
- * Validate service selection
- */
-export function validateService(
-  service: string,
-  allowedServices: string[]
-): {
-  isValid: boolean;
-  sanitized: string;
-} {
-  const sanitized = sanitizeString(service);
-  const isValid = allowedServices.some(
-    (s) => s.toLowerCase() === sanitized.toLowerCase()
-  );
+function isValidDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
 
-  return { isValid, sanitized };
+  const dateCheck = validateDate(value);
+  if (!dateCheck.isValid) return false;
+
+  const selected = new Date(`${value}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return !Number.isNaN(selected.getTime()) && selected >= today;
 }
 
-/**
- * Validate vehicle type selection
- */
-export function validateVehicleType(
-  vehicleType: string,
-  allowedTypes: string[]
-): {
-  isValid: boolean;
-  sanitized: string;
-} {
-  const sanitized = sanitizeString(vehicleType);
-  const isValid = allowedTypes.some(
-    (t) => t.toLowerCase() === sanitized.toLowerCase()
-  );
+const bookingSchema = z.object({
+  name: z.string().min(2).max(100).regex(NAME_PATTERN, "Enter a valid name"),
+  phone: z.string().regex(PHONE_PATTERN, "Enter a valid phone number"),
+  email: z.string().email().max(254),
+  vehicleType: z.string().min(1).max(60),
+  carModel: z.string().max(100),
+  date: z.string().refine(isValidDate, "Select a valid future date"),
+  timeSlot: z.string().regex(TIME_SLOT_PATTERN, "Select a valid time slot"),
+  service: z.string().min(1).max(500),
+  notes: z.string().max(1000),
+  price: z.number().finite().nonnegative(),
+});
 
-  return { isValid, sanitized };
-}
-
-/**
- * Comprehensive booking form validation
- */
-export interface BookingFormData {
+export interface ValidatedBookingInput {
   name: string;
-  email: string;
   phone: string;
-  carModel: string;
-  service: string;
+  email: string;
   vehicleType: string;
+  carModel: string;
   date: string;
   timeSlot: string;
-  notes?: string;
+  service: string;
+  notes: string;
+  price: number;
 }
 
-export interface ValidationResult {
-  isValid: boolean;
-  errors: Record<string, string>;
-  sanitized: Partial<BookingFormData>;
+export interface ValidatedCancellationInput {
+  phone: string;
+  date: string;
+  timeSlot: string;
 }
 
-export function validateBookingForm(
-  data: BookingFormData,
-  allowedServices: string[],
-  allowedVehicles: string[]
-): ValidationResult {
-  const errors: Record<string, string> = {};
-  const sanitized: Partial<BookingFormData> = {};
+export type ValidationResult<T> =
+  | { success: true; data: T; error?: never }
+  | { success: false; error: string; data?: never };
 
-  // Validate name
-  const sanitizedName = sanitizeName(data.name);
-  if (!sanitizedName || sanitizedName.length < 2) {
-    errors.name = "Name is required and must be at least 2 characters";
-  } else {
-    sanitized.name = sanitizedName;
+export function validateBookingInput(input: {
+  name: string;
+  phone: string;
+  email: string;
+  vehicleType: string;
+  carModel: string;
+  date: string;
+  timeSlot: string;
+  service: string;
+  notes: string;
+  price: number;
+}): ValidationResult<ValidatedBookingInput> {
+  const result = bookingSchema.safeParse({
+    ...input,
+    name: sanitizeText(input.name, 100),
+    phone: sanitizeText(input.phone, 20),
+    email: sanitizeText(input.email, 254).toLowerCase(),
+    vehicleType: sanitizeText(input.vehicleType, 60),
+    carModel: sanitizeText(input.carModel, 100),
+    date: sanitizeText(input.date, 10),
+    timeSlot: sanitizeText(input.timeSlot, 5),
+    service: sanitizeText(input.service, 500),
+    notes: sanitizeText(input.notes, 1000),
+  });
+
+  if (!result.success) {
+    return { success: false, error: result.error.issues[0]?.message || "Please check your booking details" };
   }
 
-  // Validate email when provided
-  if (data.email.trim()) {
-    const emailValidation = validateAndSanitizeEmail(data.email);
-    if (!emailValidation.isValid) {
-      errors.email = "Please enter a valid email address";
-    } else {
-      sanitized.email = emailValidation.sanitized;
-    }
-  }
-
-  // Validate phone
-  const phoneValidation = validateAndSanitizePhone(data.phone);
-  if (!phoneValidation.isValid) {
-    errors.phone = "Please enter a valid Indian phone number";
-  } else {
-    sanitized.phone = phoneValidation.sanitized;
-  }
-
-  // Validate car model
-  const sanitizedCar = sanitizeVehicleDetails(data.carModel);
-  if (!sanitizedCar || sanitizedCar.length < 2) {
-    errors.carModel = "Car model is required";
-  } else {
-    sanitized.carModel = sanitizedCar.slice(0, 100);
-  }
-
-  // Validate service
-  const serviceValidation = validateService(data.service, allowedServices);
-  if (!serviceValidation.isValid) {
-    errors.service = "Invalid service selected";
-  } else {
-    sanitized.service = serviceValidation.sanitized;
-  }
-
-  // Validate vehicle type
-  const vehicleValidation = validateVehicleType(data.vehicleType, allowedVehicles);
-  if (!vehicleValidation.isValid) {
-    errors.vehicleType = "Invalid vehicle type selected";
-  } else {
-    sanitized.vehicleType = vehicleValidation.sanitized;
-  }
-
-  // Validate date
-  const dateValidation = validateDate(data.date);
-  if (!dateValidation.isValid) {
-    errors.date = "Please select a valid future date";
-  } else {
-    sanitized.date = dateValidation.sanitized;
-  }
-
-  // Validate time slot
-  const timeValidation = validateTimeSlot(data.timeSlot);
-  if (!timeValidation.isValid) {
-    errors.timeSlot = "Invalid time slot";
-  } else {
-    sanitized.timeSlot = timeValidation.sanitized;
-  }
-
-  // Validate notes (optional)
-  if (data.notes) {
-    sanitized.notes = sanitizeNotes(data.notes);
-  }
-
-  return {
-    isValid: Object.keys(errors).length === 0,
-    errors,
-    sanitized,
-  };
+  return { success: true, data: result.data as ValidatedBookingInput };
 }
 
-/**
- * Rate limiting helper for client-side submission throttling
- */
-export class RateLimiter {
-  private attempts: Map<string, number[]> = new Map();
-  private readonly maxAttempts: number;
-  private readonly windowMs: number;
+const cancellationSchema = z.object({
+  phone: z.string().regex(PHONE_PATTERN, "Enter a valid phone number"),
+  date: z.string().refine((value) => /^\d{4}-\d{2}-\d{2}$/.test(value), "Select a valid date"),
+  timeSlot: z.string().regex(TIME_SLOT_PATTERN, "Select a valid time slot"),
+});
 
-  constructor(maxAttempts: number = 5, windowMs: number = 60000) {
-    this.maxAttempts = maxAttempts;
-    this.windowMs = windowMs;
+export function validateCancellationInput(input: {
+  phone: string;
+  date: string;
+  timeSlot: string;
+}): ValidationResult<ValidatedCancellationInput> {
+  const result = cancellationSchema.safeParse({
+    phone: sanitizeText(input.phone, 20),
+    date: sanitizeText(input.date, 10),
+    timeSlot: sanitizeText(input.timeSlot, 5),
+  });
+
+  if (!result.success) {
+    return { success: false, error: result.error.issues[0]?.message || "Please check the cancellation details" };
   }
 
-  isAllowed(key: string): boolean {
-    const now = Date.now();
-    const attempts = this.attempts.get(key) || [];
-
-    // Remove old attempts outside window
-    const recentAttempts = attempts.filter((time) => now - time < this.windowMs);
-
-    if (recentAttempts.length < this.maxAttempts) {
-      recentAttempts.push(now);
-      this.attempts.set(key, recentAttempts);
-      return true;
-    }
-
-    return false;
-  }
-
-  reset(key: string): void {
-    this.attempts.delete(key);
-  }
-
-  getRemainingTime(key: string): number {
-    const attempts = this.attempts.get(key) || [];
-    if (attempts.length === 0) return 0;
-
-    const oldestAttempt = Math.min(...attempts);
-    const timeUntilReset = oldestAttempt + this.windowMs - Date.now();
-    return Math.max(0, timeUntilReset);
-  }
+  return { success: true, data: result.data as ValidatedCancellationInput };
 }
-
-export const bookingLimiter = new RateLimiter(3, 300000); // 3 attempts per 5 minutes

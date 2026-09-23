@@ -65,10 +65,36 @@ function fail(message, data) {
 }
 
 function getSheet() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  let sheet = ss.getSheets().find((s) => s.getSheetId() === SHEET_GID);
-  if (!sheet) sheet = ss.getSheetByName(SHEET_NAME);
-  if (!sheet) throw new Error("Bookings sheet not found");
+  let ss = null;
+  if (SPREADSHEET_ID && SPREADSHEET_ID !== "YOUR_SPREADSHEET_ID_HERE") {
+    try {
+      ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    } catch (_) {
+      // Fallback if standalone spreadsheet ID isn't found
+    }
+  }
+  if (!ss) {
+    try {
+      ss = SpreadsheetApp.getActiveSpreadsheet();
+    } catch (_) {}
+  }
+  if (!ss) {
+    throw new Error("Spreadsheet not accessible. Please verify SPREADSHEET_ID in Code.gs or bind the script to a Google Sheet.");
+  }
+
+  let sheet = null;
+  if (typeof SHEET_GID === "number" && SHEET_GID > 0) {
+    sheet = ss.getSheets().find((s) => s.getSheetId() === SHEET_GID);
+  }
+  if (!sheet) {
+    sheet = ss.getSheetByName(SHEET_NAME);
+  }
+  if (!sheet) {
+    sheet = ss.getSheets()[0];
+  }
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_NAME);
+  }
   return sheet;
 }
 
@@ -117,19 +143,19 @@ function isValidEmail(value) {
 
 function ensureHeaderRow(sh) {
   if (sh.getLastRow() === 0) {
-    sh.appendRow(["name", "email", "phone", "car_model", "service", "date", "time", "status", "created_at"]);
+    sh.appendRow(["name", "email", "phone", "car_model", "service", "date", "time", "status", "created_at", "booking_id", "notes"]);
     return;
   }
 
-  const lastColumn = Math.max(sh.getLastColumn(), 9);
+  const lastColumn = Math.max(sh.getLastColumn(), 11);
   const header = sh.getRange(1, 1, 1, lastColumn).getDisplayValues()[0].map(clean);
 
   if (header[0] === "name" && header[1] === "email" && header[2] === "phone") {
     return;
   }
 
-  sh.getRange(1, 1, 1, 9).setValues([
-    ["name", "email", "phone", "car_model", "service", "date", "time", "status", "created_at"],
+  sh.getRange(1, 1, 1, 11).setValues([
+    ["name", "email", "phone", "car_model", "service", "date", "time", "status", "created_at", "booking_id", "notes"],
   ]);
 }
 
@@ -351,7 +377,7 @@ function handleGetBookings() {
     });
   }
 
-  const rows = sh.getRange(2, 1, lastRow - 1, 9).getDisplayValues();
+  const rows = sh.getRange(2, 1, lastRow - 1, 11).getDisplayValues();
   const bookings = rows
     .filter((r) => r.some((cell) => clean(cell)))
     .map((r, i) => ({
@@ -370,6 +396,8 @@ function handleGetBookings() {
       status: clean(r[7]) === "completed" ? "completed" : "booked",
       createdAt: clean(r[8]),
       created_at: clean(r[8]),
+      bookingId: clean(r[9]) || ("BK-" + String(i + 2)),
+      notes: clean(r[10]),
     }));
 
   return jsonResponse({
@@ -390,6 +418,7 @@ function handleBook(body) {
   const date = normalizeDate(clean(body.date));
   const time = normalizeTime(clean(body.slot || body.timeSlot || body.time));
   const vehicleType = clean(body.vehicleType || body.vehicle_type);
+  const notes = clean(body.notes);
 
   if (!name || !phone || !service || !date || !time) {
     return fail("Missing required fields");
@@ -400,7 +429,7 @@ function handleBook(body) {
 
   const lr = sh.getLastRow();
   if (lr > 1) {
-    const rows = sh.getRange(2, 1, lr - 1, 9).getDisplayValues();
+    const rows = sh.getRange(2, 1, lr - 1, 11).getDisplayValues();
     const exists = rows.some(
       (r) =>
         normalizeDate(r[5]) === date &&
@@ -413,7 +442,8 @@ function handleBook(body) {
     }
   }
 
-  sh.appendRow([name, email, phone, carModel, service, date, time, "booked", new Date()]);
+  const bookingId = "BK-" + Utilities.getUuid().slice(0, 8).toUpperCase();
+  sh.appendRow([name, email, phone, carModel, service, date, time, "booked", new Date().toISOString(), bookingId, notes]);
 
   // Server-side price calculation - ignore any client-submitted price
   const selectedServices = String(service || "")
@@ -435,7 +465,7 @@ function handleBook(body) {
   let emailSent = false;
   let emailStatus = "not_requested";
 
-  if (shouldSendEmail) {
+  if (shouldSendEmail && email) {
     const mail = sendBookingEmail(email, {
       name: name,
       email: email,
@@ -449,8 +479,6 @@ function handleBook(body) {
     emailSent = mail.sent === true;
     emailStatus = mail.reason;
   }
-
-  const bookingId = "BK-" + Utilities.getUuid().slice(0, 8).toUpperCase();
 
   return jsonResponse({
     success: true,
@@ -519,7 +547,8 @@ function handleDeleteByDetails(body) {
     return fail("No bookings found");
   }
 
-  const rows = sh.getRange(2, 1, lastRow - 1, 9).getDisplayValues();
+  const lastCol = Math.max(sh.getLastColumn(), 11);
+  const rows = sh.getRange(2, 1, lastRow - 1, lastCol).getDisplayValues();
 
   for (let i = rows.length - 1; i >= 0; i--) {
     const rowPhone = normalizePhone(rows[i][2]);

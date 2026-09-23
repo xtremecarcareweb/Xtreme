@@ -12,8 +12,8 @@ export interface Booking {
   rowNumber?: number;
 }
 
-const SCRIPT_URL = import.meta.env.VITE_API_URL || "";
-const ADMIN_AUTH_TOKEN = import.meta.env.VITE_ADMIN_AUTH_TOKEN || "";
+export const SCRIPT_URL =
+  "https://script.google.com/macros/s/AKfycby4kXssusJyisJUQVSELXJCUlaqghgEQDztjMlGu4zePhfobdcUwXhh6sYzudN8Kdgp/exec";
 
 export const TIME_SLOTS = [
   "09:00",
@@ -66,16 +66,11 @@ async function readApiResponse(response: Response): Promise<ApiResponse> {
 }
 
 async function postScriptPayload(payload: Record<string, unknown>): Promise<ApiResponse> {
-  // Add auth token to protected operations
-  const payloadWithAuth = {
-    ...payload,
-    adminAuthToken: ADMIN_AUTH_TOKEN,
-  };
-
   const response = await fetch(SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(payloadWithAuth),
+    body: JSON.stringify(payload),
+    redirect: "follow",
   });
 
   const data = await readApiResponse(response);
@@ -205,13 +200,13 @@ export async function deleteBooking(id: string): Promise<void> {
     id,
     bookingId: id,
     rowNumber: Number.isFinite(rowNumber) ? rowNumber : undefined,
-    adminAuthToken: ADMIN_AUTH_TOKEN,
   };
 
   const response = await fetch(SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify(payload),
+    redirect: "follow",
   });
 
   const data = await readApiResponse(response);
@@ -240,8 +235,8 @@ export async function deleteBookingByDetails(payload: {
       date: body.date,
       time: body.timeSlot,
       timeSlot: body.timeSlot,
-      adminAuthToken: ADMIN_AUTH_TOKEN,
     }),
+    redirect: "follow",
   });
 
   const data = await readApiResponse(response);
@@ -260,8 +255,8 @@ export async function markCompleted(id: string): Promise<void> {
       id,
       bookingId: id,
       rowNumber: Number.isFinite(rowNumber) ? rowNumber : undefined,
-      adminAuthToken: ADMIN_AUTH_TOKEN,
     }),
+    redirect: "follow",
   });
 
   const data = await readApiResponse(response);

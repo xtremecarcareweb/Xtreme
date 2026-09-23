@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   CalendarDays,
@@ -33,23 +33,19 @@ import Footer from "@/components/Footer";
 import WhatsAppButton from "@/components/WhatsAppButton";
 import { Button } from "@/components/ui/button";
 import {
+  SCRIPT_URL,
   TIME_SLOTS,
   deleteBooking,
   deleteBookingByDetails,
   getBookings,
   getFriendlyError,
 } from "@/lib/bookings";
-import {
-  validateBookingForm,
-  sanitizeName,
-  validateAndSanitizeEmail,
-  validateAndSanitizePhone,
-  bookingLimiter,
-} from "@/lib/validation";
+import { validateBookingInput, validateCancellationInput } from "@/lib/validation";
 import { toast } from "sonner";
-import { createBooking } from "@/lib/api";
 
-const API_URL = import.meta.env.VITE_API_URL || "";
+const API_URL = import.meta.env.VITE_API_URL || SCRIPT_URL;
+
+const DENT_PRICE = 500;
 const TOTAL_STEPS = 7;
 
 interface Service {
@@ -213,19 +209,50 @@ async function apiCall(action: string, params: Record<string, string | number> =
     }
   });
 
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 5000);
-
   try {
-    const response = await fetch(url.toString(), { signal: controller.signal });
+    if (action === "createBooking") {
+      const body = {
+        action: "create_booking",
+        name: String(params.name || ""),
+        phone: String(params.phone || ""),
+        vehicleType: String(params.vehicleType || ""),
+        servicePackage: String(params.servicePackage || params.service || ""),
+        date: String(params.date || ""),
+        slot: String(params.slot || params.timeSlot || ""),
+        email: String(params.email || ""),
+        carModel: String(params.carModel || ""),
+        notes: String(params.notes || ""),
+        price: Number(params.price || 0),
+      };
+      const response = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(body),
+        redirect: "follow",
+      });
+      const raw = await response.json();
+
+      if (!response.ok || raw.status === "error" || raw.success === false) {
+        return { success: false, error: String(raw.message || raw.error || "Booking request failed") };
+      }
+
+      return {
+        success: true,
+        data: (raw.data || raw) as Confirmation,
+        message: raw.message,
+      };
+    }
+
+    const timeout = new Promise<never>((_, reject) => {
+      window.setTimeout(() => reject(new Error("Booking service timed out")), 5000);
+    });
+    const response = await Promise.race([fetch(url.toString()), timeout]);
     return await response.json();
   } catch (err) {
     return {
       success: false,
       error: "Network error: " + (err instanceof Error ? err.message : String(err)),
     };
-  } finally {
-    window.clearTimeout(timeoutId);
   }
 }
 
@@ -426,9 +453,9 @@ function OptionCard({
 export default function BookAppointment() {
   const [step, setStep] = useState(1);
   const [state, setState] = useState<BookingWizardState>(INITIAL_STATE);
-  const [services, setServices] = useState<Service[]>([]);
-  const [vehicleTypes, setVehicleTypes] = useState<VehicleType[]>([]);
-  const [addons, setAddons] = useState<Addon[]>([]);
+  const [services, setServices] = useState<Service[]>(MOCK_DATA.services);
+  const [vehicleTypes, setVehicleTypes] = useState<VehicleType[]>(MOCK_DATA.vehicleTypes);
+  const [addons, setAddons] = useState<Addon[]>(MOCK_DATA.addons);
   const [slots, setSlots] = useState<Slot[]>([]);
   const [price, setPrice] = useState<PriceSummary | null>(null);
   const [loadingSlots, setLoadingSlots] = useState(false);
@@ -441,6 +468,8 @@ export default function BookAppointment() {
   const [cancelDate, setCancelDate] = useState("");
   const [cancelTimeSlot, setCancelTimeSlot] = useState("");
   const [isCancelling, setIsCancelling] = useState(false);
+  const bookingSubmitLock = useRef(false);
+  const cancellationSubmitLock = useRef(false);
 
   const progress = (step / TOTAL_STEPS) * 100;
 
@@ -470,7 +499,7 @@ export default function BookAppointment() {
         case 4:
           return Boolean(state.timeSlot);
         case 5:
-          return Boolean(state.customer.name && state.customer.phone);
+          return Boolean(state.customer.name && state.customer.phone && state.customer.email);
         case 6:
           return true;
         default:
@@ -481,28 +510,24 @@ export default function BookAppointment() {
   );
 
   const loadStaticData = useCallback(async () => {
-    setServices(MOCK_DATA.services);
-    setVehicleTypes(MOCK_DATA.vehicleTypes);
-    setAddons(MOCK_DATA.addons);
+    const [svcRes, vehicleRes, addonRes] = await Promise.all([
+      apiCall("getServices"),
+      apiCall("getVehicleTypes"),
+      apiCall("getAddons"),
+    ]);
 
-    try {
-      const [svcRes, vehicleRes, addonRes] = await Promise.all([
-        apiCall("getServices"),
-        apiCall("getVehicleTypes"),
-        apiCall("getAddons"),
-      ]);
+    const nextServices = Array.isArray(svcRes.data) && svcRes.data.length ? (svcRes.data as Service[]) : MOCK_DATA.services;
+    const nextVehicleTypes = Array.isArray(vehicleRes.data) && vehicleRes.data.length
+      ? (vehicleRes.data as VehicleType[])
+      : MOCK_DATA.vehicleTypes;
+    const nextAddons = Array.isArray(addonRes.data) && addonRes.data.length ? (addonRes.data as Addon[]) : MOCK_DATA.addons;
 
-      if (Array.isArray(svcRes.data) && svcRes.data.length > 0) {
-        setServices(svcRes.data as Service[]);
-      }
-      if (Array.isArray(vehicleRes.data) && vehicleRes.data.length > 0) {
-        setVehicleTypes(vehicleRes.data as VehicleType[]);
-      }
-      if (Array.isArray(addonRes.data) && addonRes.data.length > 0) {
-        setAddons(addonRes.data as Addon[]);
-      }
-    } catch {
-      // Keep the local catalog available when the API is unavailable.
+    setServices(nextServices);
+    setVehicleTypes(nextVehicleTypes);
+    setAddons(nextAddons);
+
+    if (!svcRes.success || !vehicleRes.success || !addonRes.success) {
+      toast.warning("Using backup booking options while the booking service reconnects.");
     }
   }, []);
 
@@ -515,16 +540,16 @@ export default function BookAppointment() {
 
     setLoadingSlots(true);
     setState((prev) => ({ ...prev, timeSlot: null }));
-    setSlots(ALL_SLOTS.map((time) => ({ time, available: true })));
 
-    try {
-      const result = await apiCall("getSlots", { date: state.date });
-      if (Array.isArray(result.data) && result.data.length > 0) {
-        setSlots(result.data as Slot[]);
-      }
-    } finally {
-      setLoadingSlots(false);
-    }
+    const result = await apiCall("getSlots", { date: state.date });
+    setLoadingSlots(false);
+
+    const availableSlots = Array.isArray(result.data) && result.data.length
+      ? (result.data as Slot[])
+      : ALL_SLOTS.map((time) => ({ time, available: true }));
+
+    setSlots(availableSlots);
+    if (!result.success) toast.warning("Using backup time slots while the booking service reconnects.");
   }, [state.date]);
 
   useEffect(() => {
@@ -569,89 +594,75 @@ export default function BookAppointment() {
     }
 
     if (step === 6) {
-      if (submitting) return;
+      if (bookingSubmitLock.current) return;
 
-      // Rate limiting: prevent spam/DoS attacks
-      if (!bookingLimiter.isAllowed("booking_submission")) {
-        const remainingMs = bookingLimiter.getRemainingTime("booking_submission");
-        const remainingSec = Math.ceil(remainingMs / 1000);
-        toast.error(`Too many booking attempts. Please wait ${remainingSec} seconds before trying again.`);
+      const validation = validateBookingInput({
+        name: state.customer.name,
+        phone: state.customer.phone,
+        email: state.customer.email,
+        vehicleType: state.vehicleType || "",
+        carModel: state.customer.carModel,
+        date: state.date || "",
+        timeSlot: state.timeSlot || "",
+        service: state.services.join(", "),
+        notes: state.customer.notes,
+        price: state.calculatedPrice,
+      });
+
+      if (!validation.success) {
+        toast.error(validation.error);
         return;
       }
 
+      bookingSubmitLock.current = true;
       setSubmitting(true);
       setConfirmError(null);
 
-      // Validate all form data before submission
-      const validationResult = validateBookingForm(
-        {
-          name: state.customer.name,
-          email: state.customer.email,
-          phone: state.customer.phone,
-          carModel: state.customer.carModel,
-          service: state.services[0] || "",
-          vehicleType: state.vehicleType || "",
-          date: state.date || "",
-          timeSlot: state.timeSlot || "",
-          notes: state.customer.notes,
-        },
-        [
-          "Business Class Customisation",
-          "Full Car Customisation",
-          "Paint Protection Film (PPF)",
-          "Coatings",
-          "Body Kits",
-          "Premium Infotainment Systems",
-          "Accessories",
-          "Gold Package",
-          "Automatic Car Wash",
-        ],
-        ["Sedan", "SUV", "Hatchback", "MUV", "Convertible", "Truck", "Commercial"]
-      );
-
-      if (!validationResult.isValid) {
-        setSubmitting(false);
-        // Show the first error message
-        const firstError = Object.values(validationResult.errors)[0];
-        toast.error(firstError || "Please check your form data");
-        console.warn("Validation errors:", validationResult.errors);
-        return;
-      }
-
-      // Use sanitized values from validation
       const payload = {
-        name: validationResult.sanitized.name,
-        phone: validationResult.sanitized.phone,
-        vehicleType: validationResult.sanitized.vehicleType || "",
-        servicePackage: state.services.join(", "),
-        date: validationResult.sanitized.date || "",
-        slot: validationResult.sanitized.timeSlot || "",
-        ...(validationResult.sanitized.email
-          ? { email: validationResult.sanitized.email }
-          : {}),
+        service: validation.data.service,
+        servicePackage: validation.data.service,
+        vehicleType: validation.data.vehicleType,
+        // dents and addons removed per request
+        date: validation.data.date,
+        timeSlot: validation.data.timeSlot,
+        slot: validation.data.timeSlot,
+        customerName: validation.data.name,
+        name: validation.data.name,
+        phone: validation.data.phone,
+        email: validation.data.email,
+        customerEmail: validation.data.email,
+        sendEmail: "true",
+        notifyCustomer: "true",
+        confirmationEmail: "true",
+        carModel: validation.data.carModel,
+        notes: validation.data.notes,
+        price: validation.data.price,
       };
 
-      const result = await createBooking(payload);
-      setSubmitting(false);
+      try {
+        const result = await apiCall("createBooking", payload);
 
-      if (!result.success) {
-        const message = String(result.error || "Something went wrong while booking.");
-        setConfirmError(message);
-        toast.error(message);
+        if (!result.success) {
+          const message = String(result.error || "Something went wrong while booking.");
+          setConfirmError(message);
+          toast.error(message);
+          setStep(7);
+          return;
+        }
+
+        const confirmationData = result.data as Confirmation;
+        setConfirmation(confirmationData);
+        toast.success("Booking confirmed successfully");
+
+        if (confirmationData.emailSent === false) {
+          toast.warning("Booking created, but confirmation email was not sent. Please contact support.");
+        }
+
         setStep(7);
-        return;
+      } finally {
+        bookingSubmitLock.current = false;
+        setSubmitting(false);
       }
-
-      const confirmationData = result.data as Confirmation;
-      setConfirmation(confirmationData);
-      toast.success("Booking confirmed successfully");
-
-      if (confirmationData.emailSent === false) {
-        toast.warning("Booking created, but confirmation email was not sent. Please contact support.");
-      }
-
-      setStep(7);
-      return;
     }
 
     const next = getNextStep(step);
@@ -683,25 +694,30 @@ export default function BookAppointment() {
   const handleCancelBooking = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!cancelPhone || !cancelDate || !cancelTimeSlot) {
-      toast.error("Enter phone, date and time slot to cancel booking");
+    if (cancellationSubmitLock.current) return;
+
+    const validation = validateCancellationInput({
+      phone: cancelPhone,
+      date: cancelDate,
+      timeSlot: cancelTimeSlot,
+    });
+
+    if (!validation.success) {
+      toast.error(validation.error);
       return;
     }
 
     try {
+      cancellationSubmitLock.current = true;
       setIsCancelling(true);
-      let deleted = false;
 
-      await deleteBookingByDetails({
-        phone: cancelPhone,
-        date: cancelDate,
-        timeSlot: cancelTimeSlot,
-      });
+      await deleteBookingByDetails(validation.data);
       toast.success("Booking cancelled successfully");
       setCancelTimeSlot("");
     } catch (error) {
       toast.error(getFriendlyError(error, "Unable to cancel booking"));
     } finally {
+      cancellationSubmitLock.current = false;
       setIsCancelling(false);
     }
   };
@@ -890,69 +906,65 @@ export default function BookAppointment() {
                 )}
 
                 {step === 5 && (
-                  <div className="space-y-4 sm:space-y-5">
+                  <div className="space-y-4">
                     <p className="font-heading font-semibold flex items-center gap-2">
                       <User className="h-4 w-4 text-primary" /> Customer Details
                     </p>
                     <div>
-                      <label className="text-sm font-medium mb-2 block">Full Name</label>
+                      <label className="text-sm mb-1.5 block">Full Name</label>
                       <input
                         type="text"
                         value={state.customer.name}
                         onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, name: e.target.value } }))}
-                        className="w-full rounded-lg border border-border bg-secondary px-4 py-3 min-h-[44px] text-base focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-0 transition-colors"
-                        placeholder="Full name"
-                        autoCapitalize="words"
+                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
+                        placeholder="Enter full name"
                         required
                       />
                     </div>
                     <div>
-                      <label className="text-sm font-medium mb-2 block flex items-center gap-1.5">
+                      <label className="text-sm mb-1.5 block flex items-center gap-1.5">
                         <Phone className="h-3.5 w-3.5 text-primary" /> Phone Number
                       </label>
                       <input
                         type="tel"
-                        inputMode="tel"
                         value={state.customer.phone}
                         onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, phone: e.target.value } }))}
-                        className="w-full rounded-lg border border-border bg-secondary px-4 py-3 min-h-[44px] text-base focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-0 transition-colors"
-                        placeholder="Phone number"
-                        pattern="[0-9+\-\s]{10,15}"
+                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
+                        placeholder="+91 XXXXX XXXXX"
                         required
                       />
                     </div>
                     <div>
-                      <label className="text-sm font-medium mb-2 block flex items-center gap-1.5">
+                      <label className="text-sm mb-1.5 block flex items-center gap-1.5">
                         <Mail className="h-3.5 w-3.5 text-primary" /> Email Address
                       </label>
                       <input
                         type="email"
-                        inputMode="email"
                         value={state.customer.email}
                         onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, email: e.target.value } }))}
-                        className="w-full rounded-lg border border-border bg-secondary px-4 py-3 min-h-[44px] text-base focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-0 transition-colors"
-                        placeholder="Email"
+                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
+                        placeholder="you@example.com"
+                        required
                       />
                     </div>
                     <div>
-                      <label className="text-sm font-medium mb-2 block flex items-center gap-1.5">
+                      <label className="text-sm mb-1.5 block flex items-center gap-1.5">
                         <Car className="h-3.5 w-3.5 text-primary" /> Car Model
                       </label>
                       <input
                         type="text"
                         value={state.customer.carModel}
                         onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, carModel: e.target.value } }))}
-                        className="w-full rounded-lg border border-border bg-secondary px-4 py-3 min-h-[44px] text-base focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-0 transition-colors"
+                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
                         placeholder="e.g., Hyundai Creta"
-                        autoCapitalize="words"
                       />
                     </div>
                     <div>
-                      <label className="text-sm font-medium mb-2 block">Notes (optional)</label>
+                      <label className="text-sm mb-1.5 block">Notes (optional)</label>
                       <textarea
                         value={state.customer.notes}
                         onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, notes: e.target.value } }))}
-                        className="w-full rounded-lg border border-border bg-secondary px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-0 transition-colors min-h-[100px] sm:min-h-[110px] resize-none"
+                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3 min-h-[110px]"
                         placeholder="Any special request"
                       />
                     </div>
@@ -971,12 +983,6 @@ export default function BookAppointment() {
                       </div>
                     ) : (
                       <div className="space-y-3">
-                        <div className="rounded-xl border border-border bg-secondary/60 p-4 space-y-2">
-                          {summaryRows.map((row) => (
-                            {/* Price summary row removed as per requirements */}
-                          ))}
-                        </div>
-
                         <div className="rounded-xl border border-border bg-secondary/60 p-4 space-y-2 text-sm">
                           <div className="flex justify-between gap-4">
                             <span className="text-muted-foreground">Services</span>
