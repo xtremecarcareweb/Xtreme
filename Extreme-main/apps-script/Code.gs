@@ -1,11 +1,28 @@
+// Secrets are stored in Apps Script Script Properties, not in this file.
+// In the Apps Script editor: Project Settings → Script Properties → Add:
+//   ADMIN_PASSWORD  = <your chosen admin password>
+
 const SPREADSHEET_ID = "1W7esU9b7ALK24XHOTjRoMv1LcGMayivzfQNHIwy3-yI";
 const SHEET_NAME = "Bookings";
 const SHEET_GID = 1806084883;
 const SENDER_EMAIL = "mohan04032007m@gmail.com";
+// Business owner inbox that receives a notification for every new booking.
+const OWNER_EMAIL = SENDER_EMAIL;
 
-// Admin authentication token for protected operations
-// WARNING: Change this token and store it securely. Use environment variables in production.
-const ADMIN_AUTH_TOKEN = "your_admin_token_here_change_in_production";
+// Admin password typed into the dashboard login, read from Script Properties (see top of file).
+// It is only ever compared here on the server and must never be put in the frontend.
+const ADMIN_PASSWORD = PropertiesService.getScriptProperties().getProperty('ADMIN_PASSWORD');
+
+// Admin sessions: a random token issued at login, stored in the script cache.
+// 21600 seconds (6 hours) is the maximum lifetime CacheService allows.
+const ADMIN_SESSION_TTL_SECONDS = 21600;
+const ADMIN_SESSION_CACHE_PREFIX = "admin-session:";
+const LOGIN_DELAY_MS = 1500;
+
+const LOCK_WAIT_MS = 10000;
+
+const MAX_FIELD_LENGTH = 200;
+const MAX_NOTES_LENGTH = 1000;
 
 const DENT_PRICE = 500;
 
@@ -13,7 +30,7 @@ const SERVICE_CATALOG = [
   { service_id: "SVC010", service_name: "Business Class Customisation", base_price: 50000 },
   { service_id: "SVC011", service_name: "Full Car Customisation", base_price: 40000 },
   { service_id: "SVC001", service_name: "Paint Protection Film (PPF)", base_price: 25000 },
-  { service_id: "SVC002", service_name: "Coatings", base_price: 15000 },
+  { service_id: "SVC002", service_name: "Ceramic Coating", base_price: 15000 },
   { service_id: "SVC012", service_name: "Body Kits", base_price: 35000 },
   { service_id: "SVC013", service_name: "Premium Infotainment Systems", base_price: 30000 },
   { service_id: "SVC005", service_name: "Accessories", base_price: 1500 },
@@ -36,9 +53,42 @@ const ADDON_CATALOG = [
 
 const ALL_SLOTS = ["09:00", "10:30", "12:00", "14:00", "16:00", "18:00"];
 
-function isValidAdminToken(token) {
-  if (!token) return false;
-  return String(token).trim() === String(ADMIN_AUTH_TOKEN).trim();
+// Sheet columns (0-based indexes into a row array)
+const COL_PHONE = 2;
+const COL_DATE = 5;
+const COL_TIME = 6;
+const COL_STATUS = 7;
+const COL_BOOKING_ID = 9;
+const SHEET_COLUMNS = 11;
+
+// Compares two strings in time that depends only on their lengths, never short-circuiting
+// on the first mismatch, so response timing does not reveal how much of a guess was right.
+function constantTimeEquals(a, b) {
+  const left = String(a);
+  const right = String(b);
+  const length = Math.max(left.length, right.length);
+  let diff = left.length ^ right.length;
+  for (let i = 0; i < length; i++) {
+    diff |= (left.charCodeAt(i) || 0) ^ (right.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
+function isCorrectAdminPassword(password) {
+  const expected = String(ADMIN_PASSWORD || "");
+  const matches = constantTimeEquals(String(password || ""), expected);
+  return expected.length > 0 && matches;
+}
+
+function sessionCacheKey(token) {
+  return ADMIN_SESSION_CACHE_PREFIX + token;
+}
+
+// True when token is a live admin session issued by handleVerifyAdmin.
+function validateSession(token) {
+  const value = clean(token);
+  if (!value) return false;
+  return CacheService.getScriptCache().get(sessionCacheKey(value)) === "valid";
 }
 
 function jsonResponse(obj) {
@@ -62,6 +112,31 @@ function fail(message, data) {
     error: message || "Request failed",
     data: data || null,
   });
+}
+
+// Apps Script web apps cannot set HTTP status codes, so the 401 is carried in the body.
+function unauthorized() {
+  return jsonResponse({
+    success: false,
+    status: "error",
+    code: 401,
+    message: "Unauthorized",
+    error: "Unauthorized",
+    data: null,
+  });
+}
+
+// Runs fn while holding the script lock so reads and writes to the sheet cannot interleave.
+function withScriptLock(fn) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_WAIT_MS)) {
+    return fail("The booking service is busy. Please try again in a moment.");
+  }
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function getSheet() {
@@ -100,6 +175,15 @@ function getSheet() {
 
 function clean(v) {
   return String(v || "").trim();
+}
+
+// Neutralises spreadsheet formula injection without altering the value: a leading apostrophe
+// makes Google Sheets store the cell as plain text, so "=..." is never evaluated and values
+// like "+91 98765 43210", "2026-10-01" or "09:00" are not converted to numbers/dates/times.
+// The apostrophe is not part of the stored value and does not appear in getDisplayValues().
+function sanitizeForSheet(value) {
+  const text = clean(value);
+  return text ? "'" + text : "";
 }
 
 function normalizePhone(v) {
@@ -141,22 +225,67 @@ function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+function getTodayInScriptTimeZone() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+
+function calculateServicePrice(selectedServices, vehicleType) {
+  const basePrice = selectedServices.reduce((sum, serviceName) => {
+    const service = SERVICE_CATALOG.find((s) => s.service_name === serviceName);
+    return sum + (service ? service.base_price : 0);
+  }, 0);
+
+  const vehicle = VEHICLE_TYPES.find((v) => v.vehicle_type === vehicleType);
+  const multiplier = vehicle ? Number(vehicle.price_multiplier) : 1;
+
+  return {
+    basePrice: basePrice,
+    multiplier: multiplier,
+    serviceTotal: Math.round(basePrice * multiplier),
+  };
+}
+
+function formatPrice(value) {
+  return Math.round(Number(value) || 0).toLocaleString("en-IN");
+}
+
 function ensureHeaderRow(sh) {
   if (sh.getLastRow() === 0) {
     sh.appendRow(["name", "email", "phone", "car_model", "service", "date", "time", "status", "created_at", "booking_id", "notes"]);
     return;
   }
 
-  const lastColumn = Math.max(sh.getLastColumn(), 11);
+  const lastColumn = Math.max(sh.getLastColumn(), SHEET_COLUMNS);
   const header = sh.getRange(1, 1, 1, lastColumn).getDisplayValues()[0].map(clean);
 
   if (header[0] === "name" && header[1] === "email" && header[2] === "phone") {
     return;
   }
 
-  sh.getRange(1, 1, 1, 11).setValues([
+  sh.getRange(1, 1, 1, SHEET_COLUMNS).setValues([
     ["name", "email", "phone", "car_model", "service", "date", "time", "status", "created_at", "booking_id", "notes"],
   ]);
+}
+
+function generateBookingId() {
+  return "BK-" + Utilities.getUuid().slice(0, 8).toUpperCase();
+}
+
+// Returns the 1-based sheet row number for a booking_id, or -1 when not found.
+function findRowByBookingId(sh, bookingId) {
+  const target = clean(bookingId).toUpperCase();
+  if (!target) return -1;
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return -1;
+
+  const ids = sh.getRange(2, COL_BOOKING_ID + 1, lastRow - 1, 1).getDisplayValues();
+  for (let i = 0; i < ids.length; i++) {
+    if (clean(ids[i][0]).toUpperCase() === target) {
+      return i + 2;
+    }
+  }
+  return -1;
 }
 
 function sendBookingEmail(email, booking) {
@@ -169,22 +298,19 @@ function sendBookingEmail(email, booking) {
     return { sent: false, reason: "Invalid recipient email format" };
   }
 
-  const remainingQuota = MailApp.getRemainingDailyQuota();
-  if (remainingQuota <= 0) {
-    return { sent: false, reason: "Daily email quota exhausted" };
-  }
-
   const subject = "Xtreme Car Care Booking Confirmation";
-  const priceInfo = booking.price ? "Estimated Price: ₹" + booking.price + "\n" : "";
+  const priceInfo = booking.price ? "Estimated Price: ₹" + formatPrice(booking.price) + "\n" : "";
   const body =
     "Dear " + booking.name + ",\n\n" +
     "Thank you for booking with Xtreme Car Care.\n\n" +
     "Your appointment has been confirmed successfully.\n\n" +
     "Booking Details\n" +
+    "Booking ID: " + booking.bookingId + "\n" +
     "Name: " + booking.name + "\n" +
     "Email: " + booking.email + "\n" +
     "Phone: " + booking.phone + "\n" +
     "Service: " + booking.service + "\n" +
+    "Vehicle: " + booking.vehicleType + "\n" +
     "Car Model: " + booking.carModel + "\n" +
     "Date: " + booking.date + "\n" +
     "Time Slot: " + booking.time + "\n" +
@@ -197,6 +323,11 @@ function sendBookingEmail(email, booking) {
     "Phone: +91 98841 49111";
 
   try {
+    const remainingQuota = MailApp.getRemainingDailyQuota();
+    if (remainingQuota <= 0) {
+      return { sent: false, reason: "Daily email quota exhausted" };
+    }
+
     const aliases = GmailApp.getAliases();
     const canUseConfiguredSender = aliases.indexOf(SENDER_EMAIL) !== -1;
 
@@ -219,7 +350,39 @@ function sendBookingEmail(email, booking) {
   } catch (error) {
     const msg = error && error.message ? error.message : String(error);
     Logger.log("Email send failed: " + msg);
-    return { sent: false, reason: msg };
+    return { sent: false, reason: "email_send_failed" };
+  }
+}
+
+function sendOwnerNotification(booking) {
+  if (!isValidEmail(OWNER_EMAIL)) {
+    return { sent: false, reason: "Owner email not configured" };
+  }
+
+  const subject = "New Booking: " + booking.name + " – " + booking.date + " " + booking.time;
+  const body =
+    "A new booking has been received.\n\n" +
+    "Booking ID: " + booking.bookingId + "\n" +
+    "Customer Name: " + booking.name + "\n" +
+    "Phone: " + booking.phone + "\n" +
+    "Email: " + (booking.email || "-") + "\n" +
+    "Service: " + booking.service + "\n" +
+    "Vehicle: " + booking.vehicleType + "\n" +
+    "Car Model: " + (booking.carModel || "-") + "\n" +
+    "Date: " + booking.date + "\n" +
+    "Time: " + booking.time + "\n" +
+    (booking.notes ? "Notes: " + booking.notes + "\n" : "");
+
+  try {
+    if (MailApp.getRemainingDailyQuota() <= 0) {
+      return { sent: false, reason: "Daily email quota exhausted" };
+    }
+    GmailApp.sendEmail(OWNER_EMAIL, subject, body, { name: "Xtreme Car Care Bookings" });
+    return { sent: true, reason: "sent" };
+  } catch (error) {
+    const msg = error && error.message ? error.message : String(error);
+    Logger.log("Owner notification failed: " + msg);
+    return { sent: false, reason: "email_send_failed" };
   }
 }
 
@@ -230,11 +393,13 @@ function testEmailDelivery(toEmail) {
   }
 
   const testBooking = {
+    bookingId: "BK-TEST",
     name: "Test User",
     email: recipient,
     phone: "9999999999",
     carModel: "Test Car",
     service: "Test Service",
+    vehicleType: "Sedan",
     date: "2026-03-15",
     time: "10:30",
   };
@@ -252,7 +417,7 @@ function doGet(e) {
     if (action === "getVehicleTypes") return ok(VEHICLE_TYPES);
     if (action === "getAddons") return ok(ADDON_CATALOG);
     if (action === "getSlots") return handleGetSlots(p);
-    if (action === "getBookings") return handleGetBookings();
+    if (action === "getBookings") return handleGetBookings(p);
     if (action === "calculatePrice") return handleCalculatePrice(p);
     if (action === "createBooking" || action === "book") return handleBook(p);
 
@@ -275,9 +440,12 @@ function doPost(e) {
 
     const action = clean(body.action);
 
+    if (action === "verifyAdmin") return handleVerifyAdmin(body);
+    if (action === "logoutAdmin") return handleLogoutAdmin(body);
+    if (action === "getBookings") return handleGetBookings(body);
     if (action === "deleteBooking") return handleDeleteBooking(body);
-    if (action === "deleteBookingByDetails") return handleDeleteByDetails(body);
-    if (action === "markCompleted") return handleMarkCompleted(body);
+    if (action === "deleteBookingByDetails" || action === "cancelBooking") return handleDeleteByDetails(body);
+    if (action === "markCompleted" || action === "completeBooking") return handleCompleteBooking(body);
     if (action === "create_booking" || action === "createBooking" || action === "book") return handleBook(body);
 
     // Keep backward compatibility: no action means create booking.
@@ -287,37 +455,56 @@ function doPost(e) {
   }
 }
 
+// Admin login: checks the typed password on the server and, if correct, issues a session token.
+function handleVerifyAdmin(body) {
+  if (!ADMIN_PASSWORD) return fail('Admin login is not configured. Set ADMIN_PASSWORD in Script Properties.');
+
+  const correct = isCorrectAdminPassword(body.password);
+
+  // Same delay for right and wrong answers: slows brute force and hides which case occurred.
+  Utilities.sleep(LOGIN_DELAY_MS);
+
+  if (!correct) {
+    return unauthorized();
+  }
+
+  const token = Utilities.getUuid();
+  CacheService.getScriptCache().put(sessionCacheKey(token), "valid", ADMIN_SESSION_TTL_SECONDS);
+  return ok({ sessionToken: token, expiresInSeconds: ADMIN_SESSION_TTL_SECONDS }, "Authorized");
+}
+
+function handleLogoutAdmin(body) {
+  const token = clean(body.adminAuthToken);
+  if (token) {
+    CacheService.getScriptCache().remove(sessionCacheKey(token));
+  }
+  return ok(null, "Logged out");
+}
+
 function handleCalculatePrice(p) {
   const selectedServices = splitCsv(p.service || p.services);
   const vehicleType = clean(p.vehicleType || p.vehicle_type);
   const dents = parseInt(clean(p.dents), 10) || 0;
   const selectedAddons = splitCsv(p.addons);
 
-  const basePrice = selectedServices.reduce((sum, serviceName) => {
-    const service = SERVICE_CATALOG.find((s) => s.service_name === serviceName);
-    return sum + (service ? service.base_price : 0);
-  }, 0);
-
-  const vehicle = VEHICLE_TYPES.find((v) => v.vehicle_type === vehicleType);
-  const multiplier = vehicle ? Number(vehicle.price_multiplier) : 1;
+  const pricing = calculateServicePrice(selectedServices, vehicleType);
 
   const addonTotal = selectedAddons.reduce((sum, addonName) => {
     const addon = ADDON_CATALOG.find((a) => a.addon_name === addonName);
     return sum + (addon ? Number(addon.price) : 0);
   }, 0);
 
-  const serviceTotal = basePrice * multiplier;
-  const dentTotal = dents * DENT_PRICE;
-  const totalPrice = serviceTotal + dentTotal + addonTotal;
+  const dentTotal = Math.round(dents * DENT_PRICE);
+  const totalPrice = Math.round(pricing.serviceTotal + dentTotal + addonTotal);
 
   return ok({
-    basePrice: basePrice,
-    multiplier: multiplier,
-    serviceTotal: serviceTotal,
+    basePrice: Math.round(pricing.basePrice),
+    multiplier: pricing.multiplier,
+    serviceTotal: pricing.serviceTotal,
     dentCount: dents,
     dentPrice: DENT_PRICE,
     dentTotal: dentTotal,
-    addonTotal: addonTotal,
+    addonTotal: Math.round(addonTotal),
     totalPrice: totalPrice,
   });
 }
@@ -343,9 +530,9 @@ function handleGetSlots(p) {
 
   const rows = sh.getRange(2, 1, lastRow - 1, 9).getDisplayValues();
   const bookedSlots = rows
-    .filter((r) => normalizeDate(r[5]) === reqDate)
-    .filter((r) => clean(r[7]) !== "completed")
-    .map((r) => clean(r[6]))
+    .filter((r) => normalizeDate(r[COL_DATE]) === reqDate)
+    .filter((r) => clean(r[COL_STATUS]) !== "completed")
+    .map((r) => normalizeTime(r[COL_TIME]))
     .filter(Boolean);
 
   const slots = ALL_SLOTS.map((time) => ({
@@ -362,227 +549,303 @@ function handleGetSlots(p) {
   });
 }
 
-function handleGetBookings() {
-  const sh = getSheet();
-  ensureHeaderRow(sh);
+function handleGetBookings(params) {
+  if (!validateSession(params && params.adminAuthToken)) {
+    return unauthorized();
+  }
 
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) {
+  return withScriptLock(() => {
+    const sh = getSheet();
+    ensureHeaderRow(sh);
+
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) {
+      return jsonResponse({
+        success: true,
+        status: "success",
+        bookings: [],
+        data: [],
+        message: "OK",
+      });
+    }
+
+    const rows = sh.getRange(2, 1, lastRow - 1, SHEET_COLUMNS).getDisplayValues();
+
+    // Backfill booking IDs for legacy rows so every booking has a stable lookup key.
+    rows.forEach((r, i) => {
+      if (r.some((cell) => clean(cell)) && !clean(r[COL_BOOKING_ID])) {
+        const newId = generateBookingId();
+        sh.getRange(i + 2, COL_BOOKING_ID + 1).setValue(newId);
+        r[COL_BOOKING_ID] = newId;
+      }
+    });
+
+    // Map before filtering so rowNumber reflects the real sheet row even when blank rows exist.
+    const bookings = rows
+      .map((r, i) => ({ r: r, rowNumber: i + 2 }))
+      .filter((entry) => entry.r.some((cell) => clean(cell)))
+      .map((entry) => {
+        const r = entry.r;
+        const bookingId = clean(r[COL_BOOKING_ID]);
+        return {
+          id: bookingId,
+          bookingId: bookingId,
+          rowNumber: entry.rowNumber,
+          name: clean(r[0]),
+          email: clean(r[1]),
+          phone: clean(r[2]),
+          car_model: clean(r[3]),
+          carModel: clean(r[3]),
+          service: clean(r[4]),
+          serviceType: clean(r[4]),
+          date: clean(r[5]),
+          time: clean(r[6]),
+          timeSlot: clean(r[6]),
+          status: clean(r[7]) === "completed" ? "completed" : "booked",
+          createdAt: clean(r[8]),
+          created_at: clean(r[8]),
+          notes: clean(r[10]),
+        };
+      });
+
     return jsonResponse({
       success: true,
       status: "success",
-      bookings: [],
-      data: [],
+      bookings: bookings,
+      data: bookings,
       message: "OK",
     });
-  }
-
-  const rows = sh.getRange(2, 1, lastRow - 1, 11).getDisplayValues();
-  const bookings = rows
-    .filter((r) => r.some((cell) => clean(cell)))
-    .map((r, i) => ({
-      id: String(i + 2),
-      rowNumber: i + 2,
-      name: clean(r[0]),
-      email: clean(r[1]),
-      phone: clean(r[2]),
-      car_model: clean(r[3]),
-      carModel: clean(r[3]),
-      service: clean(r[4]),
-      serviceType: clean(r[4]),
-      date: clean(r[5]),
-      time: clean(r[6]),
-      timeSlot: clean(r[6]),
-      status: clean(r[7]) === "completed" ? "completed" : "booked",
-      createdAt: clean(r[8]),
-      created_at: clean(r[8]),
-      bookingId: clean(r[9]) || ("BK-" + String(i + 2)),
-      notes: clean(r[10]),
-    }));
-
-  return jsonResponse({
-    success: true,
-    status: "success",
-    bookings: bookings,
-    data: bookings,
-    message: "OK",
   });
 }
 
+function validateBookingFields(fields) {
+  if (!fields.name || !fields.phone || !fields.service || !fields.date || !fields.time || !fields.vehicleType) {
+    return "Missing required fields";
+  }
+
+  if (fields.name.length > MAX_FIELD_LENGTH) return "Name is too long";
+  if (fields.phone.length > MAX_FIELD_LENGTH) return "Phone number is too long";
+  if (fields.email.length > MAX_FIELD_LENGTH) return "Email is too long";
+  if (fields.carModel.length > MAX_FIELD_LENGTH) return "Car model is too long";
+  if (fields.notes.length > MAX_NOTES_LENGTH) return "Notes are too long";
+
+  if (fields.email && !isValidEmail(fields.email)) return "Invalid email address";
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fields.date)) return "Invalid date";
+  if (fields.date < getTodayInScriptTimeZone()) return "Date must be today or in the future";
+
+  if (ALL_SLOTS.indexOf(fields.time) === -1) return "Invalid time slot";
+
+  const selectedServices = splitCsv(fields.service);
+  if (selectedServices.length === 0) return "Missing required fields";
+  const unknownService = selectedServices.find(
+    (name) => !SERVICE_CATALOG.some((s) => s.service_name === name)
+  );
+  if (unknownService) return "Unknown service: " + unknownService;
+
+  if (!VEHICLE_TYPES.some((v) => v.vehicle_type === fields.vehicleType)) return "Unknown vehicle type";
+
+  return null;
+}
+
 function handleBook(body) {
-  const name = clean(body.customerName || body.name);
-  const email = clean(body.customerEmail || body.email);
-  const phone = clean(body.phone);
-  const carModel = clean(body.carModel || body.car_model);
-  const service = clean(body.servicePackage || body.service || body.services);
-  const date = normalizeDate(clean(body.date));
-  const time = normalizeTime(clean(body.slot || body.timeSlot || body.time));
-  const vehicleType = clean(body.vehicleType || body.vehicle_type);
-  const notes = clean(body.notes);
+  const fields = {
+    name: clean(body.customerName || body.name),
+    email: clean(body.customerEmail || body.email),
+    phone: clean(body.phone),
+    carModel: clean(body.carModel || body.car_model),
+    service: clean(body.servicePackage || body.service || body.services),
+    date: normalizeDate(clean(body.date)),
+    time: normalizeTime(clean(body.slot || body.timeSlot || body.time)),
+    vehicleType: clean(body.vehicleType || body.vehicle_type),
+    notes: clean(body.notes),
+  };
 
-  if (!name || !phone || !service || !date || !time) {
-    return fail("Missing required fields");
+  const validationError = validateBookingFields(fields);
+  if (validationError) {
+    return fail(validationError);
   }
 
-  const sh = getSheet();
-  ensureHeaderRow(sh);
+  const booking = {
+    name: fields.name,
+    email: fields.email,
+    phone: fields.phone,
+    carModel: fields.carModel,
+    service: fields.service,
+    vehicleType: fields.vehicleType,
+    notes: fields.notes,
+    date: fields.date,
+    time: fields.time,
+    bookingId: generateBookingId(),
+  };
 
-  const lr = sh.getLastRow();
-  if (lr > 1) {
-    const rows = sh.getRange(2, 1, lr - 1, 11).getDisplayValues();
-    const exists = rows.some(
-      (r) =>
-        normalizeDate(r[5]) === date &&
-        normalizeTime(r[6]) === time &&
-        clean(r[7]) !== "completed"
-    );
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_WAIT_MS)) {
+    return fail("The booking service is busy. Please try again in a moment.");
+  }
 
-    if (exists) {
-      return fail("Slot already booked");
+  try {
+    const sh = getSheet();
+    ensureHeaderRow(sh);
+
+    const lr = sh.getLastRow();
+    if (lr > 1) {
+      const rows = sh.getRange(2, 1, lr - 1, SHEET_COLUMNS).getDisplayValues();
+      const exists = rows.some(
+        (r) =>
+          normalizeDate(r[COL_DATE]) === booking.date &&
+          normalizeTime(r[COL_TIME]) === booking.time &&
+          clean(r[COL_STATUS]) !== "completed"
+      );
+
+      if (exists) {
+        return fail("Slot already booked");
+      }
     }
-  }
 
-  const bookingId = "BK-" + Utilities.getUuid().slice(0, 8).toUpperCase();
-  sh.appendRow([name, email, phone, carModel, service, date, time, "booked", new Date().toISOString(), bookingId, notes]);
+    // Every cell is written as plain text (apostrophe prefix) to block formula injection
+    // and stop Sheets from reformatting phone numbers, dates and times.
+    sh.appendRow(
+      [
+        booking.name,
+        booking.email,
+        booking.phone,
+        booking.carModel,
+        booking.service,
+        booking.date,
+        booking.time,
+        "booked",
+        new Date().toISOString(),
+        booking.bookingId,
+        booking.notes,
+      ].map(sanitizeForSheet)
+    );
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
 
   // Server-side price calculation - ignore any client-submitted price
-  const selectedServices = String(service || "")
-    .split(",")
-    .map((s) => clean(s))
-    .filter(Boolean);
-  const basePrice = selectedServices.reduce((sum, serviceName) => {
-    const svc = SERVICE_CATALOG.find((s) => s.service_name === serviceName);
-    return sum + (svc ? svc.base_price : 0);
-  }, 0);
-
-  const vehicle = VEHICLE_TYPES.find((v) => v.vehicle_type === vehicleType);
-  const multiplier = vehicle ? Number(vehicle.price_multiplier) : 1;
-  const calculatedPrice = basePrice * multiplier;
+  const pricing = calculateServicePrice(splitCsv(booking.service), booking.vehicleType);
+  const calculatedPrice = Math.round(pricing.serviceTotal);
+  booking.price = calculatedPrice;
 
   const shouldSendEmail =
     String(body.sendEmail || body.notifyCustomer || body.confirmationEmail || "true").toLowerCase() !== "false";
 
+  // The row is already saved, so nothing below may turn this into a failed booking.
   let emailSent = false;
   let emailStatus = "not_requested";
 
-  if (shouldSendEmail && email) {
-    const mail = sendBookingEmail(email, {
-      name: name,
-      email: email,
-      phone: phone,
-      carModel: carModel,
-      service: service,
-      date: date,
-      time: time,
-      price: calculatedPrice,
-    });
-    emailSent = mail.sent === true;
-    emailStatus = mail.reason;
+  if (shouldSendEmail && booking.email) {
+    try {
+      const mail = sendBookingEmail(booking.email, booking);
+      emailSent = mail.sent === true;
+      emailStatus = mail.reason;
+    } catch (error) {
+      Logger.log("Unexpected email error: " + (error && error.message ? error.message : String(error)));
+      emailSent = false;
+      emailStatus = "email_send_failed";
+    }
+  }
+
+  // Owner notification is independent of the customer email: it is attempted for every booking.
+  let ownerNotified = false;
+  try {
+    ownerNotified = sendOwnerNotification(booking).sent === true;
+  } catch (error) {
+    Logger.log("Unexpected owner notification error: " + (error && error.message ? error.message : String(error)));
   }
 
   return jsonResponse({
     success: true,
     status: "success",
     message: "Booking confirmed!",
-    bookingId: bookingId,
+    bookingId: booking.bookingId,
     data: {
-      bookingId: bookingId,
-      service: service,
-      vehicleType: vehicleType,
-      date: date,
-      timeSlot: time,
+      bookingId: booking.bookingId,
+      service: booking.service,
+      vehicleType: booking.vehicleType,
+      date: booking.date,
+      timeSlot: booking.time,
       price: calculatedPrice,
       status: "Confirmed",
       message: "Booking confirmed successfully!",
       emailSent: emailSent,
       emailStatus: emailStatus,
+      ownerNotified: ownerNotified,
     },
   });
 }
 
 function handleDeleteBooking(body) {
-  // Validate admin token
-  if (!isValidAdminToken(body.adminAuthToken)) {
-    return fail("Unauthorized: Invalid or missing admin token");
+  if (!validateSession(body.adminAuthToken)) {
+    return unauthorized();
   }
 
-  const rowNumber = parseInt(body.rowNumber || body.id, 10);
-  const sh = getSheet();
-  ensureHeaderRow(sh);
+  const bookingId = clean(body.bookingId || body.id);
+  if (!bookingId) return fail("Missing booking ID");
 
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) return fail("No bookings found");
+  return withScriptLock(() => {
+    const sh = getSheet();
+    ensureHeaderRow(sh);
 
-  if (!isNaN(rowNumber) && rowNumber >= 2 && rowNumber <= lastRow) {
+    const rowNumber = findRowByBookingId(sh, bookingId);
+    if (rowNumber === -1) return fail("Booking not found");
+
     sh.deleteRow(rowNumber);
     return ok(null, "Booking deleted");
-  }
-
-  return fail("Booking not found");
+  });
 }
 
+// Customer self-cancellation. No admin session: the customer proves ownership with the
+// booking ID from their confirmation plus the phone number used when booking.
 function handleDeleteByDetails(body) {
-  // Validate admin token
-  if (!isValidAdminToken(body.adminAuthToken)) {
-    return fail("Unauthorized: Invalid or missing admin token");
-  }
-
   const phone = normalizePhone(clean(body.phone));
-  const date = normalizeDate(clean(body.date));
-  const time = normalizeTime(clean(body.time || body.timeSlot));
+  const bookingId = clean(body.bookingId).toUpperCase();
 
-  Logger.log("Delete request: phone=%s, date=%s, time=%s", phone, date, time);
-
-  if (!phone || !date || !time) {
-    Logger.log("Missing phone, date, or time");
-    return fail("Missing phone, date or time");
+  if (!phone || !bookingId) {
+    return fail("Missing phone number or booking ID");
   }
 
-  const sh = getSheet();
-  ensureHeaderRow(sh);
+  // Same message for "no such ID" and "wrong phone" so the endpoint can't be used to probe IDs.
+  const notFound = "No booking found with that booking ID and phone number";
 
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) {
-    Logger.log("No bookings found in sheet");
-    return fail("No bookings found");
-  }
+  return withScriptLock(() => {
+    const sh = getSheet();
+    ensureHeaderRow(sh);
 
-  const lastCol = Math.max(sh.getLastColumn(), 11);
-  const rows = sh.getRange(2, 1, lastRow - 1, lastCol).getDisplayValues();
+    const rowNumber = findRowByBookingId(sh, bookingId);
+    if (rowNumber === -1) return fail(notFound);
 
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const rowPhone = normalizePhone(rows[i][2]);
-    const rowDate = normalizeDate(rows[i][5]);
-    const rowTime = normalizeTime(rows[i][6]);
-    Logger.log("Comparing row %d: rowPhone=%s, rowDate=%s, rowTime=%s", i+2, rowPhone, rowDate, rowTime);
-    if (rowPhone === phone && rowDate === date && rowTime === time) {
-      Logger.log("Match found at row %d. Deleting row.", i+2);
-      sh.deleteRow(i + 2);
-      return ok(null, "Booking cancelled");
+    const row = sh.getRange(rowNumber, 1, 1, SHEET_COLUMNS).getDisplayValues()[0];
+    if (normalizePhone(row[COL_PHONE]) !== phone) return fail(notFound);
+
+    if (clean(row[COL_STATUS]) === "completed") {
+      return fail("This booking has already been completed and cannot be cancelled");
     }
-  }
 
-  Logger.log("No matching booking found for deletion");
-  return fail("Booking not found");
+    sh.deleteRow(rowNumber);
+    return ok(null, "Booking cancelled");
+  });
 }
 
-function handleMarkCompleted(body) {
-  // Validate admin token
-  if (!isValidAdminToken(body.adminAuthToken)) {
-    return fail("Unauthorized: Invalid or missing admin token");
+function handleCompleteBooking(body) {
+  if (!validateSession(body.adminAuthToken)) {
+    return unauthorized();
   }
 
-  const rowNumber = parseInt(body.rowNumber || body.id, 10);
-  const sh = getSheet();
-  ensureHeaderRow(sh);
+  const bookingId = clean(body.bookingId || body.id);
+  if (!bookingId) return fail("Missing booking ID");
 
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) return fail("No bookings found");
+  return withScriptLock(() => {
+    const sh = getSheet();
+    ensureHeaderRow(sh);
 
-  if (!isNaN(rowNumber) && rowNumber >= 2 && rowNumber <= lastRow) {
-    sh.getRange(rowNumber, 8).setValue("completed");
+    const rowNumber = findRowByBookingId(sh, bookingId);
+    if (rowNumber === -1) return fail("Booking not found");
+
+    sh.getRange(rowNumber, COL_STATUS + 1).setValue("completed");
     return ok(null, "Marked completed");
-  }
-
-  return fail("Booking not found");
+  });
 }

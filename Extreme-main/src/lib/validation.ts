@@ -4,6 +4,7 @@ const HTML_TAGS = /<[^>]*>/g;
 const NAME_PATTERN = /^[\p{L}][\p{L}\s.'-]*$/u;
 const PHONE_PATTERN = /^\+?[0-9][0-9\s().-]{6,19}$/;
 const TIME_SLOT_PATTERN = /^(09:00|10:30|12:00|14:00|16:00|18:00)$/;
+const BOOKING_ID_PATTERN = /^BK-[A-Z0-9]{4,20}$/;
 
 export function sanitizeText(value: string, maxLength: number): string {
   const withoutControlCharacters = Array.from(value)
@@ -110,8 +111,7 @@ export interface ValidatedBookingInput {
 
 export interface ValidatedCancellationInput {
   phone: string;
-  date: string;
-  timeSlot: string;
+  bookingId: string;
 }
 
 export type ValidationResult<T> =
@@ -152,19 +152,16 @@ export function validateBookingInput(input: {
 
 const cancellationSchema = z.object({
   phone: z.string().regex(PHONE_PATTERN, "Enter a valid phone number"),
-  date: z.string().refine((value) => /^\d{4}-\d{2}-\d{2}$/.test(value), "Select a valid date"),
-  timeSlot: z.string().regex(TIME_SLOT_PATTERN, "Select a valid time slot"),
+  bookingId: z.string().regex(BOOKING_ID_PATTERN, "Enter the booking ID from your confirmation (e.g. BK-1A2B3C4D)"),
 });
 
 export function validateCancellationInput(input: {
   phone: string;
-  date: string;
-  timeSlot: string;
+  bookingId: string;
 }): ValidationResult<ValidatedCancellationInput> {
   const result = cancellationSchema.safeParse({
     phone: sanitizeText(input.phone, 20),
-    date: sanitizeText(input.date, 10),
-    timeSlot: sanitizeText(input.timeSlot, 5),
+    bookingId: sanitizeText(input.bookingId, 30).replace(/\s+/g, "").toUpperCase(),
   });
 
   if (!result.success) {

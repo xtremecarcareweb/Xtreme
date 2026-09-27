@@ -1,59 +1,84 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
-import { CalendarDays, Clock, Users, Trash2, CheckCircle, LogIn, Eye, EyeOff } from "lucide-react";
+import { CalendarDays, Clock, Users, Trash2, CheckCircle, LogIn, Eye, EyeOff, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   getBookings,
   deleteBooking,
   markCompleted,
+  loginAdmin,
+  logoutAdmin,
+  UnauthorizedError,
   TIME_SLOTS,
   getFriendlyError,
   type Booking,
 } from "@/lib/bookings";
 import { toast } from "sonner";
 
-const ADMIN_USER = "admin";
-const ADMIN_PASS = "xtreme2024";
-const ADMIN_SESSION_KEY = "xtreme-admin-session";
-const ADMIN_SESSION_TTL_MS = 30 * 60 * 1000;
+// The admin types a password, the backend verifies it and returns a session token
+// (valid up to 6 hours server-side). Only that token is stored, for this tab only.
+const SESSION_TOKEN_KEY = "xtreme-session-token";
 
-function createSessionToken(): string {
-  return `${crypto.randomUUID()}.${Date.now()}`;
-}
-
-function hasValidAdminSession(): boolean {
+function readSessionToken(): string | null {
   try {
-    const rawSession = sessionStorage.getItem(ADMIN_SESSION_KEY);
-    if (!rawSession) return false;
-
-    const session = JSON.parse(rawSession) as { token?: string; expiresAt?: number };
-    if (!session.token || !session.expiresAt || session.expiresAt <= Date.now()) {
-      sessionStorage.removeItem(ADMIN_SESSION_KEY);
-      return false;
-    }
-
-    return true;
+    return sessionStorage.getItem(SESSION_TOKEN_KEY) || null;
   } catch {
-    sessionStorage.removeItem(ADMIN_SESSION_KEY);
-    return false;
+    return null;
   }
 }
 
-function clearAdminSession(): void {
-  sessionStorage.removeItem(ADMIN_SESSION_KEY);
+function saveSessionToken(token: string): void {
+  try {
+    sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+  } catch {
+    // Storage unavailable (e.g. private mode): the session just won't survive a reload.
+  }
+}
+
+function clearSessionToken(): void {
+  try {
+    sessionStorage.removeItem(SESSION_TOKEN_KEY);
+  } catch {
+    // ignore
+  }
 }
 
 export default function AdminDashboard() {
-  const [isLoggedIn, setIsLoggedIn] = useState(() => hasValidAdminSession());
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const [sessionToken, setSessionToken] = useState<string | null>(() => readSessionToken());
+  const [passwordInput, setPasswordInput] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [filterDate, setFilterDate] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+
+  const isLoggedIn = Boolean(sessionToken);
+
+  // Resets to the login screen without contacting the server.
+  const resetToLogin = useCallback(() => {
+    clearSessionToken();
+    setSessionToken(null);
+    setBookings([]);
+    setFilterDate("");
+    setSyncError(null);
+  }, []);
+
+  const handleLogout = async () => {
+    const token = sessionToken;
+    resetToLogin();
+    if (token) {
+      await logoutAdmin(token);
+    }
+  };
+
+  const handleSessionRejected = useCallback(() => {
+    resetToLogin();
+    toast.error("Your session has expired. Please log in again.");
+  }, [resetToLogin]);
 
   useEffect(() => {
-    if (!isLoggedIn) return;
+    if (!sessionToken) return;
 
     let isMounted = true;
 
@@ -63,13 +88,22 @@ export default function AdminDashboard() {
       }
 
       try {
-        const latest = await getBookings();
+        const latest = await getBookings(sessionToken);
         if (isMounted) {
           setBookings(latest);
+          setSyncError(null);
         }
       } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          if (isMounted) handleSessionRejected();
+          return;
+        }
+        // Background refreshes never toast; the status line above the table shows the problem.
         if (isMounted) {
-          toast.error(getFriendlyError(error, "Could not load bookings"));
+          setSyncError(getFriendlyError(error, "Could not load bookings"));
+        }
+        if (import.meta.env.DEV) {
+          console.warn("[Admin] Booking refresh failed:", error);
         }
       } finally {
         if (isMounted && !silent) {
@@ -88,57 +122,79 @@ export default function AdminDashboard() {
       isMounted = false;
       window.clearInterval(pollId);
     };
-  }, [isLoggedIn]);
+  }, [sessionToken, handleSessionRejected]);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (username === ADMIN_USER && password === ADMIN_PASS) {
-      sessionStorage.setItem(
-        ADMIN_SESSION_KEY,
-        JSON.stringify({ token: createSessionToken(), expiresAt: Date.now() + ADMIN_SESSION_TTL_MS })
-      );
-      setIsLoggedIn(true);
-      setUsername("");
-      setPassword("");
+    if (!passwordInput || isVerifying) return;
+
+    setIsVerifying(true);
+    try {
+      const token = await loginAdmin(passwordInput);
+      if (!token) {
+        toast.error("Invalid password");
+        return;
+      }
+      saveSessionToken(token);
+      setSessionToken(token);
+      setPasswordInput("");
       toast.success("Welcome, Admin!");
-    } else {
-      toast.error("Invalid credentials");
+    } catch {
+      toast.error("Could not reach the booking service. Please try again.");
+    } finally {
+      setIsVerifying(false);
     }
   };
 
-  const handleLogout = () => {
-    clearAdminSession();
-    setIsLoggedIn(false);
-    setBookings([]);
-    setFilterDate("");
-  };
-
-  const refreshBookings = async () => {
-    const latest = await getBookings();
-    setBookings(latest);
-  };
-
-  const handleDelete = async (id: string) => {
+  const refreshAfterAction = async () => {
+    if (!sessionToken) return;
     try {
-      await deleteBooking(id);
-      await refreshBookings();
-      toast.success("Booking deleted");
+      const latest = await getBookings(sessionToken);
+      setBookings(latest);
+      setSyncError(null);
     } catch (error) {
+      if (error instanceof UnauthorizedError) {
+        handleSessionRejected();
+        return;
+      }
+      setSyncError(getFriendlyError(error, "Could not load bookings"));
+    }
+  };
+
+  const handleDelete = async (bookingId: string) => {
+    if (!sessionToken) return;
+    try {
+      await deleteBooking(bookingId, sessionToken);
+    } catch (error) {
+      if (error instanceof UnauthorizedError) {
+        handleSessionRejected();
+        return;
+      }
       toast.error(getFriendlyError(error, "Could not delete booking"));
+      return;
     }
+    toast.success("Booking deleted");
+    await refreshAfterAction();
   };
 
-  const handleComplete = async (id: string) => {
+  const handleComplete = async (bookingId: string) => {
+    if (!sessionToken) return;
     try {
-      await markCompleted(id);
-      await refreshBookings();
-      toast.success("Marked as completed");
+      await markCompleted(bookingId, sessionToken);
     } catch (error) {
+      if (error instanceof UnauthorizedError) {
+        handleSessionRejected();
+        return;
+      }
       toast.error(getFriendlyError(error, "Could not update booking"));
+      return;
     }
+    toast.success("Marked as completed");
+    await refreshAfterAction();
   };
 
-  const today = new Date().toISOString().split("T")[0];
+  // YYYY-MM-DD for the current day in India, regardless of the admin's device timezone.
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   const todayBookings = bookings.filter((b) => b.date === today);
   const filtered = filterDate ? bookings.filter((b) => b.date === filterDate) : bookings;
   const availableToday = TIME_SLOTS.length - todayBookings.filter((b) => b.status === "booked").length;
@@ -159,22 +215,14 @@ export default function AdminDashboard() {
             <p className="text-muted-foreground text-sm mt-1">Xtreme Car Care Dashboard</p>
           </div>
           <div>
-            <label className="text-sm font-heading font-semibold mb-2 block">Username</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full rounded-lg border border-border bg-secondary px-4 py-3 text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
-              required
-            />
-          </div>
-          <div>
-            <label className="text-sm font-heading font-semibold mb-2 block">Password</label>
+            <label htmlFor="admin-password" className="text-sm font-heading font-semibold mb-2 block">Password</label>
             <div className="relative">
               <input
+                id="admin-password"
                 type={showPassword ? "text" : "password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                autoComplete="current-password"
                 className="w-full rounded-lg border border-border bg-secondary px-4 py-3 text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors pr-10"
                 required
               />
@@ -182,12 +230,21 @@ export default function AdminDashboard() {
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                aria-label={showPassword ? "Hide password" : "Show password"}
               >
                 {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
           </div>
-          <Button type="submit" variant="gold" className="w-full">Login</Button>
+          <Button type="submit" variant="gold" className="w-full" disabled={isVerifying}>
+            {isVerifying ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Verifying...
+              </>
+            ) : (
+              "Login"
+            )}
+          </Button>
         </motion.form>
       </div>
     );
@@ -198,7 +255,7 @@ export default function AdminDashboard() {
       <div className="border-b border-border glass">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <h1 className="font-heading text-xl font-bold text-gradient-gold">Admin Dashboard</h1>
-          <Button variant="gold-outline" size="sm" onClick={handleLogout}>Logout</Button>
+          <Button variant="gold-outline" size="sm" onClick={() => void handleLogout()}>Logout</Button>
         </div>
       </div>
 
@@ -235,6 +292,11 @@ export default function AdminDashboard() {
           {filterDate && (
             <Button variant="ghost" size="sm" onClick={() => setFilterDate("")}>Clear</Button>
           )}
+          {syncError && (
+            <p className="ml-auto text-xs text-destructive" role="status" title={syncError}>
+              Live refresh failed — retrying…
+            </p>
+          )}
         </div>
 
         {/* Bookings Table */}
@@ -265,7 +327,7 @@ export default function AdminDashboard() {
                   </tr>
                 ) : (
                   filtered.map((booking) => (
-                    <tr key={booking.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
+                    <tr key={booking.bookingId} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
                       <td className="px-4 py-3 text-sm font-medium">{booking.name}</td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">{booking.email || "-"}</td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">{booking.phone}</td>
@@ -286,7 +348,7 @@ export default function AdminDashboard() {
                         <div className="flex items-center gap-2">
                           {booking.status === "booked" && (
                             <button
-                              onClick={() => handleComplete(booking.id)}
+                              onClick={() => handleComplete(booking.bookingId)}
                               className="text-gradient-gold hover:text-[#bfa76a] transition-colors"
                               title="Mark completed"
                             >
@@ -294,7 +356,7 @@ export default function AdminDashboard() {
                             </button>
                           )}
                           <button
-                            onClick={() => handleDelete(booking.id)}
+                            onClick={() => handleDelete(booking.bookingId)}
                             className="text-destructive hover:text-destructive/80 transition-colors"
                             title="Delete"
                           >

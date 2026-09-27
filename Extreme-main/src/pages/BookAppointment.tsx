@@ -32,21 +32,18 @@ import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import WhatsAppButton from "@/components/WhatsAppButton";
 import { Button } from "@/components/ui/button";
-import {
-  SCRIPT_URL,
-  TIME_SLOTS,
-  deleteBooking,
-  deleteBookingByDetails,
-  getBookings,
-  getFriendlyError,
-} from "@/lib/bookings";
+import { cancelBooking, getFriendlyError } from "@/lib/bookings";
+import { API_URL } from "@/lib/config";
 import { validateBookingInput, validateCancellationInput } from "@/lib/validation";
 import { toast } from "sonner";
 
-const API_URL = import.meta.env.VITE_API_URL || SCRIPT_URL;
-
-const DENT_PRICE = 500;
 const TOTAL_STEPS = 7;
+const REVIEW_STEP = 6;
+const CONFIRMATION_STEP = 7;
+const GET_TIMEOUT_MS = 5000;
+const BOOKING_TIMEOUT_MS = 30000;
+const BOOKING_TIMEOUT_MESSAGE =
+  "The booking request timed out. Your booking may still have been received — please check your email for a confirmation before trying again.";
 
 interface Service {
   service_id: string;
@@ -146,7 +143,7 @@ const MOCK_DATA = {
     { service_id: "SVC010", service_name: "Business Class Customisation", base_price: 50000 },
     { service_id: "SVC011", service_name: "Full Car Customisation", base_price: 40000 },
     { service_id: "SVC001", service_name: "Paint Protection Film (PPF)", base_price: 25000 },
-    { service_id: "SVC002", service_name: "Coatings", base_price: 15000 },
+    { service_id: "SVC002", service_name: "Ceramic Coating", base_price: 15000 },
     { service_id: "SVC012", service_name: "Body Kits", base_price: 35000 },
     { service_id: "SVC013", service_name: "Premium Infotainment Systems", base_price: 30000 },
     { service_id: "SVC005", service_name: "Accessories", base_price: 1500 },
@@ -164,10 +161,8 @@ const MOCK_DATA = {
     { addon_id: "ADD002", addon_name: "Wheel Coating", price: 2000 },
     { addon_id: "ADD003", addon_name: "Headlight Restoration", price: 1800 },
   ] as Addon[],
-  bookedSlots: {} as Record<string, string[]>,
 };
 
-const ALL_SLOTS = ["09:00", "10:30", "12:00", "14:00", "16:00", "18:00"];
 
 const serviceIcons: Record<string, typeof Shield> = {
   "Paint Protection Film": Shield,
@@ -191,15 +186,17 @@ const addonIcons: Record<string, typeof Wind> = {
   "Headlight Restoration": Lightbulb,
 };
 
-function isDemo() {
-  return !API_URL || API_URL.trim() === "";
+function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => window.clearTimeout(timeoutId));
+}
+
+function isAbortError(err: unknown) {
+  return err instanceof DOMException ? err.name === "AbortError" : err instanceof Error && err.name === "AbortError";
 }
 
 async function apiCall(action: string, params: Record<string, string | number> = {}) {
-  if (isDemo()) {
-    return mockApiCall(action, params);
-  }
-
   const url = new URL(API_URL);
   url.searchParams.set("action", action);
 
@@ -224,13 +221,33 @@ async function apiCall(action: string, params: Record<string, string | number> =
         notes: String(params.notes || ""),
         price: Number(params.price || 0),
       };
-      const response = await fetch(API_URL, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify(body),
-        redirect: "follow",
-      });
-      const raw = await response.json();
+
+      let response: Response;
+      try {
+        response = await fetchWithTimeout(
+          API_URL,
+          {
+            method: "POST",
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            body: JSON.stringify(body),
+            redirect: "follow",
+          },
+          BOOKING_TIMEOUT_MS
+        );
+      } catch (err) {
+        if (isAbortError(err)) {
+          return { success: false, error: BOOKING_TIMEOUT_MESSAGE };
+        }
+        throw err;
+      }
+
+      const rawText = await response.text();
+      let raw: Record<string, unknown>;
+      try {
+        raw = JSON.parse(rawText);
+      } catch {
+        return { success: false, error: "The booking service returned an unexpected response. Please try again or contact us." };
+      }
 
       if (!response.ok || raw.status === "error" || raw.success === false) {
         return { success: false, error: String(raw.message || raw.error || "Booking request failed") };
@@ -243,113 +260,16 @@ async function apiCall(action: string, params: Record<string, string | number> =
       };
     }
 
-    const timeout = new Promise<never>((_, reject) => {
-      window.setTimeout(() => reject(new Error("Booking service timed out")), 5000);
-    });
-    const response = await Promise.race([fetch(url.toString()), timeout]);
+    const response = await fetchWithTimeout(url.toString(), {}, GET_TIMEOUT_MS);
     return await response.json();
   } catch (err) {
     return {
       success: false,
-      error: "Network error: " + (err instanceof Error ? err.message : String(err)),
+      error: isAbortError(err)
+        ? "Booking service timed out"
+        : "Network error: " + (err instanceof Error ? err.message : String(err)),
     };
   }
-}
-
-function mockApiCall(action: string, params: Record<string, string | number>) {
-  return new Promise<{ success: boolean; data?: unknown; error?: string }>((resolve) => {
-    setTimeout(() => {
-      switch (action) {
-        case "getServices":
-          resolve({ success: true, data: MOCK_DATA.services });
-          break;
-        case "getVehicleTypes":
-          resolve({ success: true, data: MOCK_DATA.vehicleTypes });
-          break;
-        case "getAddons":
-          resolve({ success: true, data: MOCK_DATA.addons });
-          break;
-        case "getSlots": {
-          const date = String(params.date ?? "");
-          const booked = MOCK_DATA.bookedSlots[date] || [];
-          resolve({
-            success: true,
-            data: ALL_SLOTS.map((time) => ({ time, available: !booked.includes(time) })),
-          });
-          break;
-        }
-        case "calculatePrice": {
-          const selectedServices = String(params.service || "")
-            .split(",")
-            .map((item) => item.trim())
-            .filter(Boolean);
-          const vehicle = MOCK_DATA.vehicleTypes.find((v) => v.vehicle_type === params.vehicleType);
-          const basePrice = selectedServices.reduce((sum, serviceName) => {
-            const service = MOCK_DATA.services.find((s) => s.service_name === serviceName);
-            return sum + (service ? service.base_price : 0);
-          }, 0);
-          const multiplier = vehicle ? vehicle.price_multiplier : 1;
-          const dents = parseInt(String(params.dents || 0), 10) || 0;
-
-          let addonTotal = 0;
-          if (params.addons) {
-            String(params.addons)
-              .split(",")
-              .map((item) => item.trim())
-              .filter(Boolean)
-              .forEach((name) => {
-                const addon = MOCK_DATA.addons.find((a) => a.addon_name === name);
-                addonTotal += addon ? addon.price : 0;
-              });
-          }
-
-          const serviceTotal = basePrice * multiplier;
-          const dentTotal = dents * DENT_PRICE;
-
-          resolve({
-            success: true,
-            data: {
-              basePrice,
-              multiplier,
-              serviceTotal,
-              dentCount: dents,
-              dentPrice: DENT_PRICE,
-              dentTotal,
-              addonTotal,
-              totalPrice: serviceTotal + dentTotal + addonTotal,
-            } as PriceSummary,
-          });
-          break;
-        }
-        case "createBooking": {
-          const bookingId = "BK-" + Math.floor(100000 + Math.random() * 900000);
-          const date = String(params.date || "");
-          const timeSlot = String(params.timeSlot || "");
-          if (!MOCK_DATA.bookedSlots[date]) {
-            MOCK_DATA.bookedSlots[date] = [];
-          }
-          MOCK_DATA.bookedSlots[date].push(timeSlot);
-
-          resolve({
-            success: true,
-            data: {
-              bookingId,
-              service: params.service,
-              vehicleType: params.vehicleType,
-              date,
-              timeSlot,
-              price: Number(params.price || 0),
-              status: "Confirmed",
-              message: "Booking confirmed successfully!",
-            } as Confirmation,
-          });
-          break;
-        }
-        default:
-          resolve({ success: false, error: "Unknown action" });
-      }
-    }, 300);
-  });
 }
 
 function formatDisplayDate(dateStr: string | null) {
@@ -369,6 +289,19 @@ function getTodayStr() {
   const month = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+// Drops slots whose start time has already passed when the selected date is today (user's local time).
+function removePastSlotsForToday(slots: Slot[], date: string) {
+  if (date !== getTodayStr()) return slots;
+
+  const now = new Date();
+  const minutesNow = now.getHours() * 60 + now.getMinutes();
+  return slots.filter((slot) => {
+    const [hours, minutes] = slot.time.split(":").map((part) => parseInt(part, 10));
+    if (Number.isNaN(hours) || Number.isNaN(minutes)) return true;
+    return hours * 60 + minutes > minutesNow;
+  });
 }
 
 function normalizePhone(value: string) {
@@ -459,14 +392,14 @@ export default function BookAppointment() {
   const [slots, setSlots] = useState<Slot[]>([]);
   const [price, setPrice] = useState<PriceSummary | null>(null);
   const [loadingSlots, setLoadingSlots] = useState(false);
+  const [slotsError, setSlotsError] = useState<string | null>(null);
   const [loadingPrice, setLoadingPrice] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
 
   const [cancelPhone, setCancelPhone] = useState("");
-  const [cancelDate, setCancelDate] = useState("");
-  const [cancelTimeSlot, setCancelTimeSlot] = useState("");
+  const [cancelBookingId, setCancelBookingId] = useState("");
   const [isCancelling, setIsCancelling] = useState(false);
   const bookingSubmitLock = useRef(false);
   const cancellationSubmitLock = useRef(false);
@@ -497,7 +430,8 @@ export default function BookAppointment() {
         case 3:
           return Boolean(state.date);
         case 4:
-          return Boolean(state.timeSlot);
+          // Slots must have loaded successfully from the backend before the user can continue.
+          return Boolean(state.timeSlot) && !loadingSlots && !slotsError;
         case 5:
           return Boolean(state.customer.name && state.customer.phone && state.customer.email);
         case 6:
@@ -506,7 +440,7 @@ export default function BookAppointment() {
           return true;
       }
     },
-    [state]
+    [state, loadingSlots, slotsError]
   );
 
   const loadStaticData = useCallback(async () => {
@@ -539,17 +473,20 @@ export default function BookAppointment() {
     if (!state.date) return;
 
     setLoadingSlots(true);
+    setSlotsError(null);
+    setSlots([]);
     setState((prev) => ({ ...prev, timeSlot: null }));
 
     const result = await apiCall("getSlots", { date: state.date });
     setLoadingSlots(false);
 
-    const availableSlots = Array.isArray(result.data) && result.data.length
-      ? (result.data as Slot[])
-      : ALL_SLOTS.map((time) => ({ time, available: true }));
+    // Never guess availability: if the backend didn't answer properly, show no slots.
+    if (!result || result.success === false || !Array.isArray(result.data) || result.data.length === 0) {
+      setSlotsError("Could not load available slots. Please try again.");
+      return;
+    }
 
-    setSlots(availableSlots);
-    if (!result.success) toast.warning("Using backup time slots while the booking service reconnects.");
+    setSlots(removePastSlotsForToday(result.data as Slot[], state.date));
   }, [state.date]);
 
   useEffect(() => {
@@ -582,7 +519,7 @@ export default function BookAppointment() {
   }, [state.addons, state.dents, state.services, state.vehicleType]);
 
   useEffect(() => {
-    if (step === 6) {
+    if (step === REVIEW_STEP) {
       void loadPrice();
     }
   }, [step, loadPrice]);
@@ -593,7 +530,7 @@ export default function BookAppointment() {
       return;
     }
 
-    if (step === 6) {
+    if (step === REVIEW_STEP) {
       if (bookingSubmitLock.current) return;
 
       const validation = validateBookingInput({
@@ -646,7 +583,7 @@ export default function BookAppointment() {
           const message = String(result.error || "Something went wrong while booking.");
           setConfirmError(message);
           toast.error(message);
-          setStep(7);
+          setStep(CONFIRMATION_STEP);
           return;
         }
 
@@ -658,11 +595,12 @@ export default function BookAppointment() {
           toast.warning("Booking created, but confirmation email was not sent. Please contact support.");
         }
 
-        setStep(7);
+        setStep(CONFIRMATION_STEP);
       } finally {
         bookingSubmitLock.current = false;
         setSubmitting(false);
       }
+      return;
     }
 
     const next = getNextStep(step);
@@ -698,8 +636,7 @@ export default function BookAppointment() {
 
     const validation = validateCancellationInput({
       phone: cancelPhone,
-      date: cancelDate,
-      timeSlot: cancelTimeSlot,
+      bookingId: cancelBookingId,
     });
 
     if (!validation.success) {
@@ -711,9 +648,9 @@ export default function BookAppointment() {
       cancellationSubmitLock.current = true;
       setIsCancelling(true);
 
-      await deleteBookingByDetails(validation.data);
+      await cancelBooking(validation.data);
       toast.success("Booking cancelled successfully");
-      setCancelTimeSlot("");
+      setCancelBookingId("");
     } catch (error) {
       toast.error(getFriendlyError(error, "Unable to cancel booking"));
     } finally {
@@ -877,6 +814,13 @@ export default function BookAppointment() {
                       <div className="flex items-center gap-2 text-sm text-muted-foreground">
                         <Loader2 className="h-4 w-4 animate-spin" /> Loading slots...
                       </div>
+                    ) : slotsError ? (
+                      <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm" role="alert">
+                        <p className="text-destructive mb-3">{slotsError}</p>
+                        <Button type="button" variant="outline" size="sm" onClick={() => void loadSlots()}>
+                          Retry
+                        </Button>
+                      </div>
                     ) : (
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                         {slots.map((slot) => {
@@ -1029,6 +973,9 @@ export default function BookAppointment() {
                         <div className="my-6 inline-block px-5 py-2 rounded-lg border border-primary/40 bg-primary/10 font-heading font-semibold">
                           {confirmation.bookingId}
                         </div>
+                        <p className="text-xs text-muted-foreground -mt-4 mb-6">
+                          Keep this booking ID — you will need it with your phone number to cancel.
+                        </p>
                         <div className="rounded-xl border border-border bg-secondary/60 p-4 text-left max-w-xl mx-auto space-y-2 text-sm">
                           <div className="flex justify-between"><span className="text-muted-foreground">Service</span><span>{confirmation.service}</span></div>
                           <div className="flex justify-between"><span className="text-muted-foreground">Vehicle</span><span>{confirmation.vehicleType}</span></div>
@@ -1049,14 +996,14 @@ export default function BookAppointment() {
             </AnimatePresence>
 
             <div className="mt-8 flex items-center justify-between gap-3">
-              {step < 9 ? (
+              {step < CONFIRMATION_STEP ? (
                 <>
-                  <Button type="button" variant="outline" onClick={goBack} disabled={step === 1}>
+                  <Button type="button" variant="outline" onClick={goBack} disabled={step === 1 || submitting}>
                     <ChevronLeft className="h-4 w-4 mr-1" /> Back
                   </Button>
                   <Button
                     type="button"
-                    variant={step === 6 ? "gold" : "default"}
+                    variant={step === REVIEW_STEP ? "gold" : "default"}
                     onClick={() => void goNext()}
                     disabled={!isStepValid(step) || submitting || loadingPrice}
                   >
@@ -1064,7 +1011,7 @@ export default function BookAppointment() {
                       <>
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Submitting...
                       </>
-                    ) : step === 8 ? (
+                    ) : step === REVIEW_STEP ? (
                       "Confirm Booking"
                     ) : (
                       <>
@@ -1094,7 +1041,7 @@ export default function BookAppointment() {
               <p className="text-primary font-heading text-xs tracking-[0.25em] uppercase mb-2">Manage Booking</p>
               <h2 className="font-heading text-2xl font-bold">Cancel Existing Booking</h2>
               <p className="text-muted-foreground text-sm mt-1">
-                Enter the same phone number, date, and slot used during booking.
+                Enter the phone number used during booking and the booking ID from your confirmation email.
               </p>
             </div>
 
@@ -1113,35 +1060,20 @@ export default function BookAppointment() {
             </div>
 
             <div>
-              <label className="flex items-center gap-2 text-sm font-heading font-semibold mb-2">
-                <CalendarDays className="h-4 w-4 text-primary" /> Date
+              <label htmlFor="cancel-booking-id" className="flex items-center gap-2 text-sm font-heading font-semibold mb-2">
+                <Tag className="h-4 w-4 text-primary" /> Booking ID
               </label>
               <input
-                type="date"
-                value={cancelDate}
-                onChange={(e) => setCancelDate(e.target.value)}
-                className="w-full rounded-lg border border-border bg-secondary px-4 py-3 text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
+                id="cancel-booking-id"
+                type="text"
+                value={cancelBookingId}
+                onChange={(e) => setCancelBookingId(e.target.value)}
+                placeholder="BK-XXXXXXXX"
+                autoCapitalize="characters"
+                autoComplete="off"
+                className="w-full rounded-lg border border-border bg-secondary px-4 py-3 text-foreground uppercase placeholder:normal-case placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
                 required
               />
-            </div>
-
-            <div>
-              <label className="flex items-center gap-2 text-sm font-heading font-semibold mb-2">
-                <Clock className="h-4 w-4 text-primary" /> Time Slot
-              </label>
-              <select
-                value={cancelTimeSlot}
-                onChange={(e) => setCancelTimeSlot(e.target.value)}
-                className="w-full rounded-lg border border-border bg-secondary px-4 py-3 text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
-                required
-              >
-                <option value="">Select booked slot</option>
-                {TIME_SLOTS.map((slot) => (
-                  <option key={slot} value={slot}>
-                    {slot}
-                  </option>
-                ))}
-              </select>
             </div>
 
             <Button type="submit" variant="destructive" size="lg" className="w-full" disabled={isCancelling}>
