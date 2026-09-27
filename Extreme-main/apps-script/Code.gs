@@ -1,6 +1,9 @@
 // Secrets are stored in Apps Script Script Properties, not in this file.
-// In the Apps Script editor: Project Settings → Script Properties → Add:
-//   ADMIN_PASSWORD  = <your chosen admin password>
+// Admin credentials are created by running setupAdminCredentials() once from the editor,
+// which writes these Script Properties (the plain password itself is never stored):
+//   ADMIN_USERNAME       = admin username
+//   ADMIN_PASSWORD_SALT  = random UUID
+//   ADMIN_PASSWORD_HASH  = sha256 hex of (salt + password)
 
 const SPREADSHEET_ID = "1W7esU9b7ALK24XHOTjRoMv1LcGMayivzfQNHIwy3-yI";
 const SHEET_NAME = "Bookings";
@@ -8,10 +11,6 @@ const SHEET_GID = 1806084883;
 const SENDER_EMAIL = "mohan04032007m@gmail.com";
 // Business owner inbox that receives a notification for every new booking.
 const OWNER_EMAIL = SENDER_EMAIL;
-
-// Admin password typed into the dashboard login, read from Script Properties (see top of file).
-// It is only ever compared here on the server and must never be put in the frontend.
-const ADMIN_PASSWORD = PropertiesService.getScriptProperties().getProperty('ADMIN_PASSWORD');
 
 // Admin sessions: a random token issued at login, stored in the script cache.
 // 21600 seconds (6 hours) is the maximum lifetime CacheService allows.
@@ -74,10 +73,49 @@ function constantTimeEquals(a, b) {
   return diff === 0;
 }
 
+// Lowercase hex SHA-256 of a UTF-8 string.
+function sha256Hex(text) {
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(text), Utilities.Charset.UTF_8);
+  return bytes.map((b) => ("0" + (b & 0xff).toString(16)).slice(-2)).join("");
+}
+
+// Run ONCE from the Apps Script editor: fill in the two values below, select
+// setupAdminCredentials in the toolbar and click Run. Then set them back to the
+// placeholders so the password does not stay in the source.
+function setupAdminCredentials() {
+  const username = "CHANGE_ME";
+  const password = "CHANGE_ME";
+
+  if (username === "CHANGE_ME" || password === "CHANGE_ME" || !clean(username) || !password) {
+    throw new Error("Edit username and password in setupAdminCredentials() before running it.");
+  }
+
+  const salt = Utilities.getUuid();
+  const props = PropertiesService.getScriptProperties();
+  props.setProperties({
+    ADMIN_USERNAME: clean(username),
+    ADMIN_PASSWORD_SALT: salt,
+    ADMIN_PASSWORD_HASH: sha256Hex(salt + password),
+  });
+  // Remove the legacy plain-text password if it is still present.
+  props.deleteProperty("ADMIN_PASSWORD");
+
+  Logger.log("Admin credentials saved. Reset the values in setupAdminCredentials() to CHANGE_ME.");
+}
+
+function getAdminCredentialConfig() {
+  const props = PropertiesService.getScriptProperties();
+  return {
+    salt: props.getProperty("ADMIN_PASSWORD_SALT") || "",
+    hash: props.getProperty("ADMIN_PASSWORD_HASH") || "",
+  };
+}
+
 function isCorrectAdminPassword(password) {
-  const expected = String(ADMIN_PASSWORD || "");
-  const matches = constantTimeEquals(String(password || ""), expected);
-  return expected.length > 0 && matches;
+  const config = getAdminCredentialConfig();
+  if (!config.salt || !config.hash) return false;
+  const submittedHash = sha256Hex(config.salt + String(password || ""));
+  return constantTimeEquals(submittedHash, config.hash.toLowerCase());
 }
 
 function sessionCacheKey(token) {
@@ -209,8 +247,30 @@ function normalizeDate(v) {
   return [a.padStart(4, "0"), b.padStart(2, "0"), c.padStart(2, "0")].join("-");
 }
 
+// Converts time values into canonical 24-hour "HH:MM", e.g. "9:00 AM" -> "09:00",
+// "2:00 PM" -> "14:00", "12:00 AM" -> "00:00", "09:00:00" -> "09:00", "6 pm" -> "18:00".
+// Values that cannot be parsed are returned trimmed and uppercased, as before.
 function normalizeTime(v) {
-  return clean(v).replace(/\s+/g, " ").toUpperCase();
+  const s = clean(v).replace(/\s+/g, " ").toUpperCase();
+  const m = s.match(/^(\d{1,2})(?:[:.](\d{2}))?(?::(\d{2}))?\s*(A\.?M\.?|P\.?M\.?)?$/);
+  if (!m) return s;
+
+  let hours = parseInt(m[1], 10);
+  const minutes = m[2] ? parseInt(m[2], 10) : 0;
+  const meridiem = m[4] ? m[4].charAt(0) : "";
+
+  if (!m[2] && !meridiem) return s; // a bare number like "9" is ambiguous
+  if (minutes > 59) return s;
+
+  if (meridiem) {
+    if (hours < 1 || hours > 12) return s;
+    if (meridiem === "A" && hours === 12) hours = 0;
+    if (meridiem === "P" && hours !== 12) hours += 12;
+  } else if (hours > 23) {
+    return s;
+  }
+
+  return String(hours).padStart(2, "0") + ":" + String(minutes).padStart(2, "0");
 }
 
 function splitCsv(value) {
@@ -457,7 +517,10 @@ function doPost(e) {
 
 // Admin login: checks the typed password on the server and, if correct, issues a session token.
 function handleVerifyAdmin(body) {
-  if (!ADMIN_PASSWORD) return fail('Admin login is not configured. Set ADMIN_PASSWORD in Script Properties.');
+  const config = getAdminCredentialConfig();
+  if (!config.salt || !config.hash) {
+    return fail("Admin login is not configured. Run setupAdminCredentials() once from the Apps Script editor.");
+  }
 
   const correct = isCorrectAdminPassword(body.password);
 
