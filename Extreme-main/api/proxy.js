@@ -12,7 +12,7 @@ export default async function handler(req, res) {
     const params = new URLSearchParams(req.query);
     const targetUrl = params.toString() ? `${apiUrl}?${params}` : apiUrl;
 
-    const opts = { method: req.method, redirect: 'manual' };
+    const opts = { method: req.method, redirect: 'follow' };
     if (req.method === 'POST' && req.body) {
       opts.headers = { 'Content-Type': 'application/json' };
       // The frontend posts JSON as text/plain, so Vercel hands us a string; don't re-encode it.
@@ -20,14 +20,6 @@ export default async function handler(req, res) {
     }
 
     const response = await fetch(targetUrl, opts);
-
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-      return res.status(502).json({
-        error: 'redirect',
-        status: response.status,
-        location: response.headers.get('location'),
-      });
-    }
 
     const contentType = response.headers.get('content-type') || '';
     if (contentType.includes('text/html')) {
@@ -44,6 +36,6 @@ export default async function handler(req, res) {
     const data = await response.json();
     return res.status(200).json(data);
   } catch (err) {
-    return res.status(500).json({ error: err.message, stack: err.stack });
+    return res.status(500).json({ error: err.message });
   }
 }
