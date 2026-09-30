@@ -26,12 +26,12 @@ export default function Footer() {
             <h4 style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: "1.05rem", color: "#FFFEF5", WebkitTextFillColor: "#FFFEF5", marginBottom: "16px", letterSpacing: "0.04em" }}>
               Quick Links
             </h4>
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
               {["Services", "About", "Gallery", "Reviews", "Contact"].map((item) => (
                 <a
                   key={item}
                   href={`/#${item.toLowerCase()}`}
-                  style={{ fontFamily: "'Jost', sans-serif", fontSize: "0.82rem", color: "#8A8278", textDecoration: "none", letterSpacing: "0.04em", transition: "color 0.2s" }}
+                  style={{ minHeight: "44px", minWidth: "44px", display: "inline-flex", alignItems: "center", fontFamily: "'Jost', sans-serif", fontSize: "0.82rem", color: "#8A8278", textDecoration: "none", letterSpacing: "0.04em", transition: "color 0.2s" }}
                   onMouseOver={(e) => (e.currentTarget.style.color = "#C9A84C")}
                   onMouseOut={(e) => (e.currentTarget.style.color = "#8A8278")}
                 >
@@ -40,7 +40,7 @@ export default function Footer() {
               ))}
               <Link
                 to="/book"
-                style={{ fontFamily: "'Jost', sans-serif", fontSize: "0.82rem", color: "#8A8278", textDecoration: "none", letterSpacing: "0.04em" }}
+                style={{ minHeight: "44px", minWidth: "44px", display: "inline-flex", alignItems: "center", fontFamily: "'Jost', sans-serif", fontSize: "0.82rem", color: "#8A8278", textDecoration: "none", letterSpacing: "0.04em" }}
                 onMouseOver={(e) => (e.currentTarget.style.color = "#C9A84C")}
                 onMouseOut={(e) => (e.currentTarget.style.color = "#8A8278")}
               >
@@ -58,7 +58,7 @@ export default function Footer() {
               {["6, Arcot Rd, Virugambakkam", "Chennai, Tamil Nadu 600092"].map((line) => (
                 <p key={line} style={{ fontFamily: "'Jost', sans-serif", fontSize: "0.82rem", color: "#8A8278" }}>{line}</p>
               ))}
-              <a href="tel:+919884149111" style={{ fontFamily: "'Jost', sans-serif", fontSize: "0.82rem", color: "#8A8278", textDecoration: "none", transition: "color 0.2s" }}
+              <a href="tel:+919884149111" style={{ minHeight: "44px", minWidth: "44px", display: "inline-flex", alignItems: "center", alignSelf: "flex-start", fontFamily: "'Jost', sans-serif", fontSize: "0.82rem", color: "#8A8278", textDecoration: "none", transition: "color 0.2s" }}
                 onMouseOver={(e) => (e.currentTarget.style.color = "#C9A84C")}
                 onMouseOut={(e) => (e.currentTarget.style.color = "#8A8278")}>
                 +91 98841 49111
@@ -66,7 +66,7 @@ export default function Footer() {
               <a
                 href="https://www.instagram.com/xtremecarcarechennai?igsh=MW01YWw4OWx3bXNteg=="
                 target="_blank" rel="noopener noreferrer"
-                style={{ fontFamily: "'Jost', sans-serif", fontSize: "0.82rem", color: "#8A8278", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "6px", transition: "color 0.2s" }}
+                style={{ fontFamily: "'Jost', sans-serif", fontSize: "0.82rem", color: "#8A8278", textDecoration: "none", display: "inline-flex", alignItems: "center", alignSelf: "flex-start", minHeight: "44px", gap: "6px", transition: "color 0.2s" }}
                 onMouseOver={(e) => (e.currentTarget.style.color = "#C9A84C")}
                 onMouseOut={(e) => (e.currentTarget.style.color = "#8A8278")}
               >

@@ -130,7 +130,20 @@ export default function Navbar() {
         <button
           className="lg:hidden"
           onClick={() => setOpen(!open)}
-          style={{ color: "#1A1814", background: "none", border: "none", cursor: "pointer" }}
+          aria-label={open ? "Close menu" : "Open menu"}
+          aria-expanded={open}
+          style={{
+            color: "#1A1814",
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            minWidth: "44px",
+            minHeight: "44px",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            marginLeft: "-12px",
+          }}
         >
           {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
@@ -145,7 +158,7 @@ export default function Navbar() {
           }}
         >
           <div className="luxury-gradient-line mb-2" />
-          <div className="flex flex-col gap-3 w-full py-4 px-6">
+          <div className="flex flex-col gap-1 w-full py-4 px-6">
             {navLinks.map((link) => (
               <button
                 key={link.label}
@@ -162,6 +175,7 @@ export default function Navbar() {
                   cursor: "pointer",
                   textAlign: "left",
                   padding: "8px 0",
+                  minHeight: "44px",
                 }}
               >
                 {link.label}
@@ -176,6 +190,7 @@ export default function Navbar() {
                   border: "none",
                   borderRadius: "3px",
                   padding: "12px",
+                  minHeight: "44px",
                   fontFamily: "'Jost', sans-serif",
                   fontWeight: 600,
                   letterSpacing: "0.12em",

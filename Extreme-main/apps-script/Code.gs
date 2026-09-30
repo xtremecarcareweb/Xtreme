@@ -25,6 +25,9 @@ const MAX_NOTES_LENGTH = 1000;
 
 const DENT_PRICE = 500;
 
+// How far ahead customers can book. Must match MAX_BOOKING_DAYS_AHEAD in src/lib/validation.ts.
+const MAX_BOOKING_DAYS_AHEAD = 90;
+
 const SERVICE_CATALOG = [
   { service_id: "SVC010", service_name: "Business Class Customisation", base_price: 50000 },
   { service_id: "SVC011", service_name: "Full Car Customisation", base_price: 40000 },
@@ -116,16 +119,20 @@ function checkSetup() {
 function getAdminCredentialConfig() {
   const props = PropertiesService.getScriptProperties();
   return {
+    username: props.getProperty("ADMIN_USERNAME") || "",
     salt: props.getProperty("ADMIN_PASSWORD_SALT") || "",
     hash: props.getProperty("ADMIN_PASSWORD_HASH") || "",
   };
 }
 
-function isCorrectAdminPassword(password) {
+// Both checks always run, so the response time does not reveal which one failed.
+function isCorrectAdminLogin(username, password) {
   const config = getAdminCredentialConfig();
-  if (!config.salt || !config.hash) return false;
+  if (!config.username || !config.salt || !config.hash) return false;
+  const usernameMatches = constantTimeEquals(clean(username), config.username);
   const submittedHash = sha256Hex(config.salt + String(password || ""));
-  return constantTimeEquals(submittedHash, config.hash.toLowerCase());
+  const passwordMatches = constantTimeEquals(submittedHash, config.hash.toLowerCase());
+  return usernameMatches && passwordMatches;
 }
 
 function sessionCacheKey(token) {
@@ -302,6 +309,13 @@ function isValidEmail(value) {
 
 function getTodayInScriptTimeZone() {
   return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+
+// Last bookable day, MAX_BOOKING_DAYS_AHEAD days after today. Must match the frontend limit.
+function getMaxBookingDateInScriptTimeZone() {
+  const date = new Date();
+  date.setDate(date.getDate() + MAX_BOOKING_DAYS_AHEAD);
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), "yyyy-MM-dd");
 }
 
 function calculateServicePrice(selectedServices, vehicleType) {
@@ -530,14 +544,15 @@ function doPost(e) {
   }
 }
 
-// Admin login: checks the typed password on the server and, if correct, issues a session token.
+// Admin login: checks the typed username and password on the server and, if both are correct,
+// issues a session token.
 function handleVerifyAdmin(body) {
   const config = getAdminCredentialConfig();
-  if (!config.salt || !config.hash) {
+  if (!config.username || !config.salt || !config.hash) {
     return fail("Admin login is not configured. Run setupAdminCredentials() once from the Apps Script editor.");
   }
 
-  const correct = isCorrectAdminPassword(body.password);
+  const correct = isCorrectAdminLogin(body.username, body.password);
 
   // Same delay for right and wrong answers: slows brute force and hides which case occurred.
   Utilities.sleep(LOGIN_DELAY_MS);
@@ -711,6 +726,9 @@ function validateBookingFields(fields) {
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(fields.date)) return "Invalid date";
   if (fields.date < getTodayInScriptTimeZone()) return "Date must be today or in the future";
+  if (fields.date > getMaxBookingDateInScriptTimeZone()) {
+    return "Bookings can be made up to " + MAX_BOOKING_DAYS_AHEAD + " days in advance";
+  }
 
   if (ALL_SLOTS.indexOf(fields.time) === -1) return "Invalid time slot";
 

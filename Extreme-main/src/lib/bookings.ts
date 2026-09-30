@@ -126,11 +126,11 @@ function normalizeBooking(rawBooking: unknown): Booking | null {
   };
 }
 
-// Sends the typed admin password to the backend. Resolves to a session token on success,
-// or null when the password is wrong. Throws only on network/service errors.
-export async function loginAdmin(password: string): Promise<string | null> {
+// Sends the typed admin username and password to the backend. Resolves to a session token on
+// success, or null when either is wrong. Throws only on network/service errors.
+export async function loginAdmin(username: string, password: string): Promise<string | null> {
   try {
-    const data = await postAction({ action: "verifyAdmin", password }, "Could not verify password");
+    const data = await postAction({ action: "verifyAdmin", username, password }, "Could not verify credentials");
     const payload = (data.data ?? {}) as { sessionToken?: unknown };
     return typeof payload.sessionToken === "string" && payload.sessionToken ? payload.sessionToken : null;
   } catch (error) {

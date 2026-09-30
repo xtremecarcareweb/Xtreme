@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { useState } from "react";
-import { type LucideIcon, BadgeCheck, CarFront, Crown, Gauge, Gem, Play, Sparkles, Wand2 } from "lucide-react";
+import { type LucideIcon, BadgeCheck, CarFront, Crown, Droplets, Gauge, Gem, Play, Shield, Sparkles, Wand2 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { getServiceVideo } from "@/lib/serviceVideos";
 
@@ -38,6 +38,26 @@ const services: Service[] = [
     icon: Wand2,
     detail: "A full-scope build that ties every detail into one coherent finish.",
     points: ["Interior and exterior coordination", "Tailored from concept to delivery"],
+  },
+  {
+    title: "Paint Protection Film (PPF)",
+    description:
+      "Invisible armour for your paint. A self-healing film that guards against stone chips, scratches and fading while keeping the factory finish flawless.",
+    category: "Paint Protection",
+    accent: "#7A8A6E",
+    icon: Shield,
+    detail: "Long-term defence for the surfaces that take the most punishment.",
+    points: ["Self-healing, near-invisible film", "Protects against chips and swirl marks"],
+  },
+  {
+    title: "Ceramic Coating",
+    description:
+      "Deep, glass-like gloss that lasts. Our ceramic coating bonds to the paint to repel water, dirt and UV, making every wash easier.",
+    category: "Surface Coating",
+    accent: "#4F7A8C",
+    icon: Droplets,
+    detail: "A hard, hydrophobic layer that keeps the shine for years, not weeks.",
+    points: ["Hydrophobic, easy-clean finish", "UV and chemical resistance"],
   },
   {
     title: "Body Kits",

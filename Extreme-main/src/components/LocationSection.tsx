@@ -36,7 +36,7 @@ export default function LocationSection() {
                 <div>
                   <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: "1rem", color: "#1A1814", WebkitTextFillColor: "#1A1814", marginBottom: "4px" }}>{title}</h3>
                   {href ? (
-                    <a href={href} style={{ fontFamily: "'Jost', sans-serif", fontSize: "0.88rem", color: "#6B6357", textDecoration: "none" }}>{content}</a>
+                    <a href={href} style={{ minHeight: "44px", display: "inline-flex", alignItems: "center", fontFamily: "'Jost', sans-serif", fontSize: "0.88rem", color: "#6B6357", textDecoration: "none" }}>{content}</a>
                   ) : (
                     <p style={{ fontFamily: "'Jost', sans-serif", fontSize: "0.88rem", color: "#6B6357", lineHeight: 1.6, whiteSpace: "pre-line" }}>{content}</p>
                   )}
@@ -58,6 +58,7 @@ export default function LocationSection() {
                     border: `1px solid #1A1814`,
                     borderRadius: "3px",
                     padding: "11px 16px",
+                    minHeight: "44px",
                     fontFamily: "'Jost', sans-serif",
                     fontWeight: 600,
                     fontSize: "0.72rem",

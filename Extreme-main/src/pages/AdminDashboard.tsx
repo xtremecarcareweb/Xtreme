@@ -1,7 +1,17 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion } from "framer-motion";
 import { CalendarDays, Clock, Users, Trash2, CheckCircle, LogIn, Eye, EyeOff, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   getBookings,
   deleteBooking,
@@ -15,7 +25,7 @@ import {
 } from "@/lib/bookings";
 import { toast } from "sonner";
 
-// The admin types a password, the backend verifies it and returns a session token
+// The admin types a username and password, the backend verifies both and returns a session token
 // (valid up to 6 hours server-side). Only that token is stored, for this tab only.
 const SESSION_TOKEN_KEY = "xtreme-session-token";
 
@@ -45,6 +55,7 @@ function clearSessionToken(): void {
 
 export default function AdminDashboard() {
   const [sessionToken, setSessionToken] = useState<string | null>(() => readSessionToken());
+  const [usernameInput, setUsernameInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
@@ -52,6 +63,10 @@ export default function AdminDashboard() {
   const [filterDate, setFilterDate] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Booking | null>(null);
+  // Bumped on every admin action so a refresh that started before the action cannot overwrite
+  // the optimistic update with stale rows when it resolves.
+  const mutationVersion = useRef(0);
 
   const isLoggedIn = Boolean(sessionToken);
 
@@ -87,9 +102,10 @@ export default function AdminDashboard() {
         setIsLoading(true);
       }
 
+      const versionAtStart = mutationVersion.current;
       try {
         const latest = await getBookings(sessionToken);
-        if (isMounted) {
+        if (isMounted && versionAtStart === mutationVersion.current) {
           setBookings(latest);
           setSyncError(null);
         }
@@ -126,17 +142,18 @@ export default function AdminDashboard() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!passwordInput || isVerifying) return;
+    if (!usernameInput.trim() || !passwordInput || isVerifying) return;
 
     setIsVerifying(true);
     try {
-      const token = await loginAdmin(passwordInput);
+      const token = await loginAdmin(usernameInput.trim(), passwordInput);
       if (!token) {
-        toast.error("Invalid password");
+        toast.error("Invalid username or password");
         return;
       }
       saveSessionToken(token);
       setSessionToken(token);
+      setUsernameInput("");
       setPasswordInput("");
       toast.success("Welcome, Admin!");
     } catch {
@@ -148,9 +165,12 @@ export default function AdminDashboard() {
 
   const refreshAfterAction = async () => {
     if (!sessionToken) return;
+    const versionAtStart = mutationVersion.current;
     try {
       const latest = await getBookings(sessionToken);
-      setBookings(latest);
+      if (versionAtStart === mutationVersion.current) {
+        setBookings(latest);
+      }
       setSyncError(null);
     } catch (error) {
       if (error instanceof UnauthorizedError) {
@@ -161,36 +181,65 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleDelete = async (bookingId: string) => {
+  // Applies an admin action optimistically: the table changes at once, the backend call runs
+  // afterwards, and the row is put back if the call fails.
+  const runOptimisticAction = async (
+    bookingId: string,
+    applyLocally: (current: Booking[]) => Booking[],
+    callBackend: (token: string) => Promise<void>,
+    successMessage: string,
+    fallbackError: string
+  ) => {
     if (!sessionToken) return;
+    const original = bookings.find((b) => b.bookingId === bookingId);
+    mutationVersion.current += 1;
+    setBookings(applyLocally);
     try {
-      await deleteBooking(bookingId, sessionToken);
+      await callBackend(sessionToken);
     } catch (error) {
+      if (original) {
+        mutationVersion.current += 1;
+        // Restore only this row so other actions made in the meantime are kept.
+        setBookings((current) =>
+          current.some((b) => b.bookingId === bookingId)
+            ? current.map((b) => (b.bookingId === bookingId ? original : b))
+            : [...current, original]
+        );
+      }
       if (error instanceof UnauthorizedError) {
         handleSessionRejected();
         return;
       }
-      toast.error(getFriendlyError(error, "Could not delete booking"));
+      toast.error(getFriendlyError(error, fallbackError));
       return;
     }
-    toast.success("Booking deleted");
+    toast.success(successMessage);
     await refreshAfterAction();
   };
 
-  const handleComplete = async (bookingId: string) => {
-    if (!sessionToken) return;
-    try {
-      await markCompleted(bookingId, sessionToken);
-    } catch (error) {
-      if (error instanceof UnauthorizedError) {
-        handleSessionRejected();
-        return;
-      }
-      toast.error(getFriendlyError(error, "Could not update booking"));
-      return;
-    }
-    toast.success("Marked as completed");
-    await refreshAfterAction();
+  const handleDelete = (bookingId: string) =>
+    runOptimisticAction(
+      bookingId,
+      (current) => current.filter((b) => b.bookingId !== bookingId),
+      (token) => deleteBooking(bookingId, token),
+      "Booking deleted",
+      "Could not delete booking"
+    );
+
+  const handleComplete = (bookingId: string) =>
+    runOptimisticAction(
+      bookingId,
+      (current) => current.map((b) => (b.bookingId === bookingId ? { ...b, status: "completed" as const } : b)),
+      (token) => markCompleted(bookingId, token),
+      "Marked as completed",
+      "Could not update booking"
+    );
+
+  const confirmDelete = () => {
+    if (!pendingDelete) return;
+    const bookingId = pendingDelete.bookingId;
+    setPendingDelete(null);
+    void handleDelete(bookingId);
   };
 
   // YYYY-MM-DD for the current day in India, regardless of the admin's device timezone.
@@ -215,6 +264,20 @@ export default function AdminDashboard() {
             <p className="text-muted-foreground text-sm mt-1">Xtreme Car Care Dashboard</p>
           </div>
           <div>
+            <label htmlFor="admin-username" className="text-sm font-heading font-semibold mb-2 block">Username</label>
+            <input
+              id="admin-username"
+              type="text"
+              value={usernameInput}
+              onChange={(e) => setUsernameInput(e.target.value)}
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              className="w-full rounded-lg border border-border bg-secondary px-4 py-3 text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
+              required
+            />
+          </div>
+          <div>
             <label htmlFor="admin-password" className="text-sm font-heading font-semibold mb-2 block">Password</label>
             <div className="relative">
               <input
@@ -223,20 +286,20 @@ export default function AdminDashboard() {
                 value={passwordInput}
                 onChange={(e) => setPasswordInput(e.target.value)}
                 autoComplete="current-password"
-                className="w-full rounded-lg border border-border bg-secondary px-4 py-3 text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors pr-10"
+                className="w-full rounded-lg border border-border bg-secondary px-4 py-3 text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors pr-12"
                 required
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                className="absolute right-0 top-1/2 -translate-y-1/2 flex h-11 w-11 items-center justify-center text-muted-foreground"
                 aria-label={showPassword ? "Hide password" : "Show password"}
               >
                 {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
           </div>
-          <Button type="submit" variant="gold" className="w-full" disabled={isVerifying}>
+          <Button type="submit" variant="gold" className="w-full h-11" disabled={isVerifying}>
             {isVerifying ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Verifying...
@@ -305,7 +368,7 @@ export default function AdminDashboard() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-border">
-                  {["Name", "Email", "Phone", "Car", "Service", "Date", "Time", "Status", "Actions"].map((h) => (
+                  {["Booking ID", "Name", "Email", "Phone", "Car", "Service", "Date", "Time", "Status", "Actions"].map((h) => (
                     <th key={h} className="text-left px-4 py-3 text-xs font-heading font-semibold text-muted-foreground uppercase tracking-wider">
                       {h}
                     </th>
@@ -315,19 +378,20 @@ export default function AdminDashboard() {
               <tbody>
                 {isLoading ? (
                   <tr>
-                    <td colSpan={9} className="text-center py-12 text-muted-foreground">
+                    <td colSpan={10} className="text-center py-12 text-muted-foreground">
                       Loading bookings...
                     </td>
                   </tr>
                 ) : filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="text-center py-12 text-muted-foreground">
+                    <td colSpan={10} className="text-center py-12 text-muted-foreground">
                       No bookings found
                     </td>
                   </tr>
                 ) : (
                   filtered.map((booking) => (
                     <tr key={booking.bookingId} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
+                      <td className="px-4 py-3 text-sm font-mono whitespace-nowrap">{booking.bookingId || "-"}</td>
                       <td className="px-4 py-3 text-sm font-medium">{booking.name}</td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">{booking.email || "-"}</td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">{booking.phone}</td>
@@ -345,20 +409,22 @@ export default function AdminDashboard() {
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1">
                           {booking.status === "booked" && (
                             <button
-                              onClick={() => handleComplete(booking.bookingId)}
-                              className="text-gradient-gold hover:text-[#bfa76a] transition-colors"
+                              onClick={() => void handleComplete(booking.bookingId)}
+                              className="inline-flex h-11 w-11 items-center justify-center text-gradient-gold hover:text-[#bfa76a] transition-colors"
                               title="Mark completed"
+                              aria-label="Mark completed"
                             >
                               <CheckCircle className="h-4 w-4" />
                             </button>
                           )}
                           <button
-                            onClick={() => handleDelete(booking.bookingId)}
-                            className="text-destructive hover:text-destructive/80 transition-colors"
+                            onClick={() => setPendingDelete(booking)}
+                            className="inline-flex h-11 w-11 items-center justify-center text-destructive hover:text-destructive/80 transition-colors"
                             title="Delete"
+                            aria-label="Delete"
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
@@ -372,6 +438,32 @@ export default function AdminDashboard() {
           </div>
         </div>
       </div>
+
+      <AlertDialog open={Boolean(pendingDelete)} onOpenChange={(isOpen) => !isOpen && setPendingDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete booking?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this booking? This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {pendingDelete && (
+            <p className="text-sm">
+              <span className="font-mono">{pendingDelete.bookingId}</span> · {pendingDelete.name} · {pendingDelete.date}{" "}
+              {pendingDelete.timeSlot}
+            </p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

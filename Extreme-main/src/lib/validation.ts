@@ -71,24 +71,47 @@ export function validateAndSanitizePhone(value: string): { isValid: boolean; san
   return { isValid: true, sanitized };
 }
 
+// How far ahead customers can book. Must match MAX_BOOKING_DAYS_AHEAD in apps-script/Code.gs.
+export const MAX_BOOKING_DAYS_AHEAD = 90;
+
+function toLocalDateString(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+// Today and the last bookable day as YYYY-MM-DD in the user's local time.
+export function getBookableDateRange(now: Date = new Date()): { min: string; max: string } {
+  const max = new Date(now.getFullYear(), now.getMonth(), now.getDate() + MAX_BOOKING_DAYS_AHEAD);
+  return { min: toLocalDateString(now), max: toLocalDateString(max) };
+}
+
+// Returns an error message for a date the customer cannot book, or null when it is bookable.
+export function getBookingDateError(value: string, now: Date = new Date()): string | null {
+  if (!value) return "Please select a date";
+  if (!validateDate(value).isValid) return "Please enter a valid date";
+
+  const { min, max } = getBookableDateRange(now);
+  if (value < min) return "This date is in the past. Please choose today or a later date.";
+  if (value > max) return `Bookings can be made up to ${MAX_BOOKING_DAYS_AHEAD} days in advance. Please choose an earlier date.`;
+  return null;
+}
+
 function isValidDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-
-  const dateCheck = validateDate(value);
-  if (!dateCheck.isValid) return false;
-
-  const selected = new Date(`${value}T00:00:00`);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return !Number.isNaN(selected.getTime()) && selected >= today;
+  return getBookingDateError(value) === null;
 }
 
 const bookingSchema = z.object({
-  name: z.string().min(2).max(100).regex(NAME_PATTERN, "Enter a valid name"),
+  name: z
+    .string()
+    .min(2, "Enter your full name")
+    .max(100, "Name is too long")
+    .regex(NAME_PATTERN, "Enter a valid name (letters, spaces, . ' - only)"),
   phone: z.string().regex(PHONE_PATTERN, "Enter a valid phone number"),
-  email: z.string().email().max(254),
+  email: z.string().email("Enter a valid email address").max(254, "Email is too long"),
   vehicleType: z.string().min(1).max(60),
-  carModel: z.string().max(100),
+  carModel: z.string().max(100, "Car model is too long"),
   date: z.string().refine(isValidDate, "Select a valid future date"),
   timeSlot: z.string().regex(TIME_SLOT_PATTERN, "Select a valid time slot"),
   service: z.string().min(1).max(500),
@@ -148,6 +171,36 @@ export function validateBookingInput(input: {
   }
 
   return { success: true, data: result.data as ValidatedBookingInput };
+}
+
+export type CustomerDetailsField = "name" | "phone" | "email" | "carModel" | "notes";
+
+const customerDetailsSchema = bookingSchema.pick({ name: true, phone: true, email: true, carModel: true, notes: true });
+
+// Validates the Details step with the same rules as the final booking check, returning the
+// first error for each invalid field (empty object when everything is valid).
+export function validateCustomerDetails(input: {
+  name: string;
+  phone: string;
+  email: string;
+  carModel: string;
+  notes: string;
+}): Partial<Record<CustomerDetailsField, string>> {
+  const result = customerDetailsSchema.safeParse({
+    name: sanitizeText(input.name, 100),
+    phone: sanitizeText(input.phone, 20),
+    email: sanitizeText(input.email, 254).toLowerCase(),
+    carModel: sanitizeText(input.carModel, 100),
+    notes: sanitizeText(input.notes, 1000),
+  });
+  if (result.success) return {};
+
+  const errors: Partial<Record<CustomerDetailsField, string>> = {};
+  for (const issue of result.error.issues) {
+    const field = issue.path[0] as CustomerDetailsField;
+    if (!errors[field]) errors[field] = issue.message;
+  }
+  return errors;
 }
 
 const cancellationSchema = z.object({

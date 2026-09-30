@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  getBookableDateRange,
+  getBookingDateError,
   sanitizeVehicleDetails,
   validateAndSanitizePhone,
+  validateCustomerDetails,
   validateDate,
 } from "./validation";
 
@@ -52,5 +55,27 @@ describe("booking validation", () => {
     expect(sanitizeVehicleDetails("<script>alert(1)</script> BMW X5")).toBe(
       "alert(1) BMW X5"
     );
+  });
+
+  it("only allows booking dates from today up to 90 days ahead", () => {
+    const now = new Date(2026, 8, 30, 15, 0); // 30 Sep 2026, local time
+    expect(getBookableDateRange(now)).toEqual({ min: "2026-09-30", max: "2026-12-29" });
+    expect(getBookingDateError("2026-09-30", now)).toBeNull();
+    expect(getBookingDateError("2026-12-29", now)).toBeNull();
+    expect(getBookingDateError("2026-09-01", now)).toMatch(/past/);
+    expect(getBookingDateError("2026-12-30", now)).toMatch(/90 days/);
+    expect(getBookingDateError("9999-12-31", now)).toMatch(/90 days/);
+    expect(getBookingDateError("2026-02-30", now)).toMatch(/valid date/);
+  });
+
+  it("reports each invalid customer detail field", () => {
+    const valid = { name: "Test User", phone: "9876543210", email: "a@b.co", carModel: "", notes: "" };
+    expect(validateCustomerDetails(valid)).toEqual({});
+    expect(validateCustomerDetails({ ...valid, email: "notanemail" })).toEqual({ email: "Enter a valid email address" });
+    expect(validateCustomerDetails({ ...valid, phone: "123" })).toEqual({ phone: "Enter a valid phone number" });
+    expect(Object.keys(validateCustomerDetails({ ...valid, name: "'; DROP TABLE bookings; --", phone: "1" }))).toEqual([
+      "name",
+      "phone",
+    ]);
   });
 });

@@ -34,10 +34,19 @@ import WhatsAppButton from "@/components/WhatsAppButton";
 import { Button } from "@/components/ui/button";
 import { cancelBooking, getFriendlyError } from "@/lib/bookings";
 import { API_URL } from "@/lib/config";
-import { validateBookingInput, validateCancellationInput } from "@/lib/validation";
+import {
+  MAX_BOOKING_DAYS_AHEAD,
+  getBookableDateRange,
+  getBookingDateError,
+  validateBookingInput,
+  validateCancellationInput,
+  validateCustomerDetails,
+  type CustomerDetailsField,
+} from "@/lib/validation";
 import { toast } from "sonner";
 
 const TOTAL_STEPS = 7;
+const DETAILS_STEP = 5;
 const REVIEW_STEP = 6;
 const CONFIRMATION_STEP = 7;
 const GET_TIMEOUT_MS = 15000;
@@ -383,6 +392,15 @@ function OptionCard({
   );
 }
 
+function FieldError({ field, errors }: { field: CustomerDetailsField; errors: Partial<Record<CustomerDetailsField, string>> }) {
+  if (!errors[field]) return null;
+  return (
+    <p id={`customer-${field}-error`} className="text-sm text-destructive mt-1.5" role="alert">
+      {errors[field]}
+    </p>
+  );
+}
+
 export default function BookAppointment() {
   const [step, setStep] = useState(1);
   const [state, setState] = useState<BookingWizardState>(INITIAL_STATE);
@@ -397,6 +415,7 @@ export default function BookAppointment() {
   const [submitting, setSubmitting] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [detailsErrors, setDetailsErrors] = useState<Partial<Record<CustomerDetailsField, string>>>({});
 
   const [cancelPhone, setCancelPhone] = useState("");
   const [cancelBookingId, setCancelBookingId] = useState("");
@@ -428,7 +447,7 @@ export default function BookAppointment() {
         case 2:
           return state.services.length > 0;
         case 3:
-          return Boolean(state.date);
+          return Boolean(state.date) && getBookingDateError(state.date || "") === null;
         case 4:
           // Slots must have loaded successfully from the backend before the user can continue.
           return Boolean(state.timeSlot) && !loadingSlots && !slotsError;
@@ -530,6 +549,16 @@ export default function BookAppointment() {
       return;
     }
 
+    if (step === DETAILS_STEP) {
+      const errors = validateCustomerDetails(state.customer);
+      setDetailsErrors(errors);
+      const firstError = Object.values(errors)[0];
+      if (firstError) {
+        toast.error(firstError);
+        return;
+      }
+    }
+
     if (step === REVIEW_STEP) {
       if (bookingSubmitLock.current) return;
 
@@ -625,7 +654,27 @@ export default function BookAppointment() {
     setPrice(null);
     setConfirmation(null);
     setConfirmError(null);
+    setDetailsErrors({});
   };
+
+  const bookableDates = getBookableDateRange();
+  const dateError = state.date ? getBookingDateError(state.date) : null;
+  const isFullyBooked = slots.length > 0 && slots.every((slot) => !slot.available);
+
+  const updateCustomerField = (field: CustomerDetailsField, value: string) => {
+    setState((prev) => ({ ...prev, customer: { ...prev.customer, [field]: value } }));
+    if (detailsErrors[field]) {
+      setDetailsErrors((prev) => ({ ...prev, [field]: undefined }));
+    }
+  };
+
+  const fieldErrorProps = (field: CustomerDetailsField, extraClassName = "") => ({
+    "aria-invalid": Boolean(detailsErrors[field]),
+    "aria-describedby": detailsErrors[field] ? `customer-${field}-error` : undefined,
+    className: `w-full rounded-xl border bg-secondary px-4 py-3 ${extraClassName} ${
+      detailsErrors[field] ? "border-destructive" : "border-border"
+    }`,
+  });
 
   // summaryRows removed (no price display)
 
@@ -795,13 +844,25 @@ export default function BookAppointment() {
                     <input
                       type="date"
                       value={state.date || ""}
-                      min={getTodayStr()}
+                      min={bookableDates.min}
+                      max={bookableDates.max}
                       onChange={(e) => {
                         const value = e.target.value;
                         setState((prev) => ({ ...prev, date: value || null, timeSlot: null }));
                       }}
-                      className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
+                      aria-invalid={Boolean(dateError)}
+                      aria-describedby={dateError ? "date-error" : undefined}
+                      className={`w-full rounded-xl border bg-secondary px-4 py-3 ${dateError ? "border-destructive" : "border-border"}`}
                     />
+                    {dateError ? (
+                      <p id="date-error" className="text-sm text-destructive mt-2" role="alert">
+                        {dateError}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Bookings are open from today up to {MAX_BOOKING_DAYS_AHEAD} days ahead.
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -817,11 +878,20 @@ export default function BookAppointment() {
                     ) : slotsError ? (
                       <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm" role="alert">
                         <p className="text-destructive mb-3">{slotsError}</p>
-                        <Button type="button" variant="outline" size="sm" onClick={() => void loadSlots()}>
+                        <Button type="button" variant="outline" size="sm" className="min-h-[44px]" onClick={() => void loadSlots()}>
                           Retry
                         </Button>
                       </div>
                     ) : (
+                      <>
+                      {isFullyBooked && (
+                        <div className="rounded-xl border border-primary/40 bg-primary/5 p-4 text-sm mb-4" role="status">
+                          <p className="mb-3">This day is fully booked. Please choose another date.</p>
+                          <Button type="button" variant="outline" size="sm" className="min-h-[44px]" onClick={() => setStep(3)}>
+                            Choose another date
+                          </Button>
+                        </div>
+                      )}
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                         {slots.map((slot) => {
                           const selected = state.timeSlot === slot.time;
@@ -845,6 +915,7 @@ export default function BookAppointment() {
                         })}
                         {slots.length === 0 && <p className="text-sm text-muted-foreground">No slots found for this date.</p>}
                       </div>
+                      </>
                     )}
                   </div>
                 )}
@@ -855,62 +926,72 @@ export default function BookAppointment() {
                       <User className="h-4 w-4 text-primary" /> Customer Details
                     </p>
                     <div>
-                      <label className="text-sm mb-1.5 block">Full Name</label>
+                      <label htmlFor="customer-name" className="text-sm mb-1.5 block">Full Name</label>
                       <input
+                        id="customer-name"
                         type="text"
                         value={state.customer.name}
-                        onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, name: e.target.value } }))}
-                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
+                        onChange={(e) => updateCustomerField("name", e.target.value)}
+                        {...fieldErrorProps("name")}
                         placeholder="Enter full name"
                         required
                       />
+                      <FieldError field="name" errors={detailsErrors} />
                     </div>
                     <div>
-                      <label className="text-sm mb-1.5 block flex items-center gap-1.5">
+                      <label htmlFor="customer-phone" className="text-sm mb-1.5 block flex items-center gap-1.5">
                         <Phone className="h-3.5 w-3.5 text-primary" /> Phone Number
                       </label>
                       <input
+                        id="customer-phone"
                         type="tel"
                         value={state.customer.phone}
-                        onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, phone: e.target.value } }))}
-                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
+                        onChange={(e) => updateCustomerField("phone", e.target.value)}
+                        {...fieldErrorProps("phone")}
                         placeholder="+91 XXXXX XXXXX"
                         required
                       />
+                      <FieldError field="phone" errors={detailsErrors} />
                     </div>
                     <div>
-                      <label className="text-sm mb-1.5 block flex items-center gap-1.5">
+                      <label htmlFor="customer-email" className="text-sm mb-1.5 block flex items-center gap-1.5">
                         <Mail className="h-3.5 w-3.5 text-primary" /> Email Address
                       </label>
                       <input
+                        id="customer-email"
                         type="email"
                         value={state.customer.email}
-                        onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, email: e.target.value } }))}
-                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
+                        onChange={(e) => updateCustomerField("email", e.target.value)}
+                        {...fieldErrorProps("email")}
                         placeholder="you@example.com"
                         required
                       />
+                      <FieldError field="email" errors={detailsErrors} />
                     </div>
                     <div>
-                      <label className="text-sm mb-1.5 block flex items-center gap-1.5">
+                      <label htmlFor="customer-carModel" className="text-sm mb-1.5 block flex items-center gap-1.5">
                         <Car className="h-3.5 w-3.5 text-primary" /> Car Model
                       </label>
                       <input
+                        id="customer-carModel"
                         type="text"
                         value={state.customer.carModel}
-                        onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, carModel: e.target.value } }))}
-                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3"
+                        onChange={(e) => updateCustomerField("carModel", e.target.value)}
+                        {...fieldErrorProps("carModel")}
                         placeholder="e.g., Hyundai Creta"
                       />
+                      <FieldError field="carModel" errors={detailsErrors} />
                     </div>
                     <div>
-                      <label className="text-sm mb-1.5 block">Notes (optional)</label>
+                      <label htmlFor="customer-notes" className="text-sm mb-1.5 block">Notes (optional)</label>
                       <textarea
+                        id="customer-notes"
                         value={state.customer.notes}
-                        onChange={(e) => setState((prev) => ({ ...prev, customer: { ...prev.customer, notes: e.target.value } }))}
-                        className="w-full rounded-xl border border-border bg-secondary px-4 py-3 min-h-[110px]"
+                        onChange={(e) => updateCustomerField("notes", e.target.value)}
+                        {...fieldErrorProps("notes", "min-h-[110px]")}
                         placeholder="Any special request"
                       />
+                      <FieldError field="notes" errors={detailsErrors} />
                     </div>
                   </div>
                 )}
@@ -998,11 +1079,12 @@ export default function BookAppointment() {
             <div className="mt-8 flex items-center justify-between gap-3">
               {step < CONFIRMATION_STEP ? (
                 <>
-                  <Button type="button" variant="outline" onClick={goBack} disabled={step === 1 || submitting}>
+                  <Button type="button" variant="outline" className="min-h-[44px]" onClick={goBack} disabled={step === 1 || submitting}>
                     <ChevronLeft className="h-4 w-4 mr-1" /> Back
                   </Button>
                   <Button
                     type="button"
+                    className="min-h-[44px]"
                     variant={step === REVIEW_STEP ? "gold" : "default"}
                     onClick={() => void goNext()}
                     disabled={!isStepValid(step) || submitting || loadingPrice}
@@ -1022,7 +1104,7 @@ export default function BookAppointment() {
                 </>
               ) : (
                 <div className="w-full flex justify-center">
-                  <Button type="button" variant="gold" onClick={resetWizard}>
+                  <Button type="button" variant="gold" className="min-h-[44px]" onClick={resetWizard}>
                     Book Another Service
                   </Button>
                 </div>
