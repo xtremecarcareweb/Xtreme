@@ -8,7 +8,7 @@
 const SPREADSHEET_ID = "1W7esU9b7ALK24XHOTjRoMv1LcGMayivzfQNHIwy3-yI";
 const SHEET_NAME = "Bookings";
 const SHEET_GID = 1806084883;
-const SENDER_EMAIL = "mohan04032007m@gmail.com";
+const SENDER_EMAIL = "xtremecarcareweb@gmail.com";
 // Business owner inbox that receives a notification for every new booking.
 const OWNER_EMAIL = SENDER_EMAIL;
 
@@ -103,6 +103,16 @@ function setupAdminCredentials() {
   Logger.log("Admin credentials saved. Reset the values in setupAdminCredentials() to CHANGE_ME.");
 }
 
+// Run from the Apps Script editor after pasting this file or changing the owning account.
+// The first run asks for authorization; approve it, then run again. It must log the sheet name.
+// If it logs a permission error, share the spreadsheet (SPREADSHEET_ID) with the account that
+// owns this script as an Editor. Until this succeeds, every sheet-backed web app request
+// (getSlots, bookings, cancellation, admin) fails with a Google error page that has no CORS headers.
+function checkSetup() {
+  const sheet = getSheet();
+  Logger.log("OK: script can open spreadsheet \"" + sheet.getParent().getName() + "\", sheet \"" + sheet.getName() + "\".");
+}
+
 function getAdminCredentialConfig() {
   const props = PropertiesService.getScriptProperties();
   return {
@@ -179,11 +189,13 @@ function withScriptLock(fn) {
 
 function getSheet() {
   let ss = null;
+  let openError = "";
   if (SPREADSHEET_ID && SPREADSHEET_ID !== "YOUR_SPREADSHEET_ID_HERE") {
     try {
       ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    } catch (_) {
-      // Fallback if standalone spreadsheet ID isn't found
+    } catch (error) {
+      // Fallback if standalone spreadsheet ID isn't found; keep the reason for the error below.
+      openError = error && error.message ? error.message : String(error);
     }
   }
   if (!ss) {
@@ -192,7 +204,10 @@ function getSheet() {
     } catch (_) {}
   }
   if (!ss) {
-    throw new Error("Spreadsheet not accessible. Please verify SPREADSHEET_ID in Code.gs or bind the script to a Google Sheet.");
+    throw new Error(
+      "Spreadsheet not accessible. Please verify SPREADSHEET_ID in Code.gs or bind the script to a Google Sheet." +
+        (openError ? " (" + openError + ")" : "")
+    );
   }
 
   let sheet = null;
