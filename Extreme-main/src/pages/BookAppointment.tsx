@@ -197,7 +197,7 @@ function isAbortError(err: unknown) {
 }
 
 async function apiCall(action: string, params: Record<string, string | number> = {}) {
-  const url = new URL(API_URL);
+  const url = new URL(API_URL, window.location.origin);
   url.searchParams.set("action", action);
 
   Object.entries(params).forEach(([key, value]) => {
