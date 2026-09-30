@@ -40,7 +40,7 @@ import { toast } from "sonner";
 const TOTAL_STEPS = 7;
 const REVIEW_STEP = 6;
 const CONFIRMATION_STEP = 7;
-const GET_TIMEOUT_MS = 5000;
+const GET_TIMEOUT_MS = 15000;
 const BOOKING_TIMEOUT_MS = 30000;
 const BOOKING_TIMEOUT_MESSAGE =
   "The booking request timed out. Your booking may still have been received — please check your email for a confirmation before trying again.";

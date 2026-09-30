@@ -9,4 +9,4 @@ function requireEnv(name: "VITE_API_URL", value: string | undefined): string {
 }
 
 // Single backend endpoint (Google Apps Script web app) used for every request.
-export const API_URL = requireEnv("VITE_API_URL", "/api/proxy");
+export const API_URL = requireEnv("VITE_API_URL", import.meta.env.VITE_API_URL);

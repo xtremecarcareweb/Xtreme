@@ -20,19 +20,6 @@ export default async function handler(req, res) {
     }
 
     const response = await fetch(targetUrl, opts);
-
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('text/html')) {
-      const text = await response.text();
-      return res.status(502).json({
-        error: 'upstream_html',
-        status: response.status,
-        redirected: response.redirected,
-        url: response.url,
-        preview: text.slice(0, 300),
-      });
-    }
-
     const data = await response.json();
     return res.status(200).json(data);
   } catch (err) {
